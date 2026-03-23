@@ -1,0 +1,97 @@
+<svg width="1024" height="1024" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="layer1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#06b6d4" />
+      <stop offset="100%" stop-color="#0891b2" />
+    </linearGradient>
+    <linearGradient id="layer2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6" />
+      <stop offset="100%" stop-color="#2563eb" />
+    </linearGradient>
+    <linearGradient id="layer3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8b5cf6" />
+      <stop offset="100%" stop-color="#7c3aed" />
+    </linearGradient>
+  </defs>
+
+  <!-- macOS-style rounded background (~83% of canvas) -->
+  <rect x="17" y="17" width="166" height="166" rx="37" ry="37" fill="#111318" />
+
+  <g transform="translate(100,100) scale(0.82) translate(-100,-100)">
+  <g transform="translate(-17.5, -8)">
+    <!-- Bottom layer - Purple -->
+    <path
+      d="M 145 50
+         C 165 50, 180 65, 180 85
+         L 180 115
+         C 180 135, 165 150, 145 150
+         L 90 150
+         C 70 150, 55 135, 55 115
+         L 55 85
+         C 55 65, 70 50, 90 50
+         L 145 50 Z
+         M 142 72
+         L 93 72
+         C 84 72, 78 78, 78 87
+         L 78 113
+         C 78 122, 84 128, 93 128
+         L 142 128
+         C 151 128, 157 122, 157 113
+         L 157 87
+         C 157 78, 151 72, 142 72
+         Z"
+      fill="url(#layer3)"
+      transform="translate(0, 16)"
+    />
+
+    <!-- Middle layer - Blue -->
+    <path
+      d="M 145 50
+         C 165 50, 180 65, 180 85
+         L 180 115
+         C 180 135, 165 150, 145 150
+         L 90 150
+         C 70 150, 55 135, 55 115
+         L 55 85
+         C 55 65, 70 50, 90 50
+         L 145 50 Z
+         M 142 72
+         L 93 72
+         C 84 72, 78 78, 78 87
+         L 78 113
+         C 78 122, 84 128, 93 128
+         L 142 128
+         C 151 128, 157 122, 157 113
+         L 157 87
+         C 157 78, 151 72, 142 72
+         Z"
+      fill="url(#layer2)"
+      transform="translate(0, 8)"
+    />
+
+    <!-- Top layer - Cyan -->
+    <path
+      d="M 145 50
+         C 165 50, 180 65, 180 85
+         L 180 115
+         C 180 135, 165 150, 145 150
+         L 90 150
+         C 70 150, 55 135, 55 115
+         L 55 85
+         C 55 65, 70 50, 90 50
+         L 145 50 Z
+         M 142 72
+         L 93 72
+         C 84 72, 78 78, 78 87
+         L 78 113
+         C 78 122, 84 128, 93 128
+         L 142 128
+         C 151 128, 157 122, 157 113
+         L 157 87
+         C 157 78, 151 72, 142 72
+         Z"
+      fill="url(#layer1)"
+    />
+  </g>
+  </g>
+</svg>

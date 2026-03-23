@@ -1,0 +1,27 @@
+.DS_Store
+.env
+.env.*
+
+# Dependencies
+/node_modules/
+
+# Electron-vite
+/out/
+/dist/
+
+# Build
+*.tsbuildinfo
+.eslintcache
+
+# Prisma
+/generated/prisma
+/prisma/*.db
+/prisma/*.db-journal
+
+# Plans
+/plans/
+
+# IDE
+.idea/
+*.swp
+*.swo
