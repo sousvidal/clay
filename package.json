@@ -1,54 +1,114 @@
 {
   "name": "clay",
+  "displayName": "Clay",
+  "description": "Clay — an agentic code editor powered by Claude",
   "version": "0.1.0",
-  "description": "Clay — an agentic code editor",
-  "main": "./out/main/index.js",
-  "author": "Clay",
+  "publisher": "clay",
   "license": "MIT",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "clay",
+          "title": "Clay",
+          "icon": "$(comment-discussion)"
+        }
+      ]
+    },
+    "views": {
+      "clay": [
+        {
+          "id": "claySessions",
+          "name": "Sessions"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "clay.openChat",
+        "title": "Clay: Open Chat",
+        "icon": "$(add)"
+      },
+      {
+        "command": "clay.newSession",
+        "title": "New Session",
+        "icon": "$(add)"
+      },
+      {
+        "command": "clay.refreshSessions",
+        "title": "Refresh Sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "clay.deleteSession",
+        "title": "Delete Session",
+        "icon": "$(trash)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "clay.newSession",
+          "when": "view == claySessions",
+          "group": "navigation"
+        },
+        {
+          "command": "clay.refreshSessions",
+          "when": "view == claySessions",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "clay.deleteSession",
+          "when": "view == claySessions",
+          "group": "inline"
+        }
+      ]
+    }
+  },
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",
-    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
-    "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
-    "typecheck": "npm run typecheck:node && npm run typecheck:web",
-    "start": "electron-vite preview",
-    "dev": "electron-vite dev",
-    "build": "npm run typecheck && electron-vite build",
-    "postinstall": "electron-builder install-app-deps",
-    "build:unpack": "npm run build && electron-builder --dir",
-    "build:win": "npm run build && electron-builder --win",
-    "build:mac": "electron-vite build && electron-builder --mac",
-    "build:linux": "electron-vite build && electron-builder --linux",
+    "typecheck": "tsc --noEmit",
+    "build:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --sourcemap",
+    "build:webview": "vite build",
+    "build": "npm run typecheck && npm run build:extension && npm run build:webview",
+    "watch:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --sourcemap --watch",
+    "watch:webview": "vite build --watch",
+    "dev": "npm run watch:extension & npm run watch:webview",
+    "package": "vsce package",
     "prepare": "husky"
   },
   "dependencies": {
-    "@electron-toolkit/preload": "^3.0.2",
-    "@electron-toolkit/utils": "^4.0.0",
-    "@fontsource-variable/plus-jakarta-sans": "^5.2.8",
-    "@monaco-editor/react": "^4.7.0",
     "@tanstack/react-virtual": "^3.13.23",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.0.1",
-    "monaco-editor": "^0.55.1",
     "radix-ui": "^1.4.3",
-    "react-resizable-panels": "^4.7.5",
-    "tailwind-merge": "^3.0.2",
-    "zustand": "^5.0.12"
+    "tailwind-merge": "^3.0.2"
   },
   "devDependencies": {
-    "@electron-toolkit/eslint-config-prettier": "^3.0.0",
-    "@electron-toolkit/eslint-config-ts": "^3.1.0",
-    "@electron-toolkit/tsconfig": "^2.0.0",
     "@tailwindcss/vite": "^4.2.2",
     "@types/node": "^22.19.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@types/vscode": "^1.100.0",
     "@vitejs/plugin-react": "^5.1.4",
-    "electron": "^41.0.3",
-    "electron-builder": "^26.8.2",
-    "electron-vite": "^5.0.0",
+    "esbuild": "^0.25.0",
     "eslint": "^9.25.1",
+    "eslint-config-prettier": "^10.1.5",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
@@ -59,6 +119,7 @@
     "react-dom": "^19.2.4",
     "tailwindcss": "^4.2.2",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.35.1",
     "vite": "^7.3.1"
   },
   "lint-staged": {
@@ -68,12 +129,6 @@
     ],
     "*.{json,css,md,yaml,yml}": [
       "prettier --write"
-    ]
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "electron",
-      "esbuild"
     ]
   }
 }

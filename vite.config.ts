@@ -1,15 +1,18 @@
-import { resolve } from 'path'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-// Thin wrapper so the shadcn CLI can detect the Vite/React setup.
-// The real build config lives in electron.vite.config.ts.
 export default defineConfig({
-  resolve: {
-    alias: {
-      '@': resolve(__dirname, 'src/renderer/src'),
+  plugins: [react(), tailwindcss()],
+  build: {
+    outDir: 'dist/webview',
+    rollupOptions: {
+      input: 'src/webview/main.tsx',
+      output: {
+        entryFileNames: 'main.js',
+        assetFileNames: 'main.[ext]',
+        chunkFileNames: '[name].js',
+      },
     },
   },
-  plugins: [react(), tailwindcss()],
 })

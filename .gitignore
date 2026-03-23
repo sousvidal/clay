@@ -5,18 +5,14 @@
 # Dependencies
 /node_modules/
 
-# Electron-vite
-/out/
+# Build output
 /dist/
+/out/
+*.vsix
 
 # Build
 *.tsbuildinfo
 .eslintcache
-
-# Prisma
-/generated/prisma
-/prisma/*.db
-/prisma/*.db-journal
 
 # Plans
 /plans/
