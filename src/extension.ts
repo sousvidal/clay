@@ -9,9 +9,11 @@ import { getWebviewContent } from './webview-provider'
 import { SessionsProvider, encodeProjectPath, getClaudeProjectsDir } from './sessions-provider'
 import { parseSessionFile } from './session-parser'
 import type { ParsedSession, SlashCommand, WorkspaceFile } from './webview/lib/types'
+import { getBaseCommand } from './shared/shell-utils'
 
 const openPanels = new Map<string, vscode.WebviewPanel>()
 const activeProcesses = new Map<string, ChildProcess>()
+const processReadyPromises = new Map<string, Promise<void>>()
 
 // ── Permission HTTP server ────────────────────────────────────────────
 
@@ -50,7 +52,13 @@ function startPermissionServer(): void {
           vscode.workspace
             .getConfiguration('clay')
             .get<Record<string, 'always_allow' | 'always_deny'>>('toolPermissions') ?? {}
-        const saved = prefs[payload.toolName]
+
+        // For Bash, check granular "Bash:<cmd>" key before the broad "Bash" key
+        let saved = prefs[payload.toolName]
+        if (payload.toolName === 'Bash' && !saved) {
+          const cmd = getBaseCommand(String(payload.toolInput.command ?? ''))
+          if (cmd) saved = prefs[`Bash:${cmd}`]
+        }
 
         if (saved === 'always_allow') {
           res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -325,7 +333,7 @@ function spawnClaudeProcess(
       'stream-json',
       '--verbose',
       '--permission-prompt-tool',
-      'permissions:prompt_for_permission',
+      'mcp__permissions__prompt_for_permission',
       '--mcp-config',
       mcpConfigPath,
       ...modeArgs,
@@ -337,8 +345,26 @@ function spawnClaudeProcess(
 
   activeProcesses.set(sessionId, proc)
 
+  // Drain stdout/stderr so the OS pipe buffers never fill up and block the CLI.
+  // Also detect readiness: the CLI emits a system init message on stdout once
+  // initialization is complete — we gate the first stdin write on this signal.
+  proc.stdout?.on('data', () => {})
+  proc.stderr?.on('data', () => {})
+
+  const ready = new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, 5_000)
+    const done = (): void => {
+      clearTimeout(timer)
+      resolve()
+    }
+    proc.stdout?.once('data', done)
+    proc.stderr?.once('data', done)
+  })
+  processReadyPromises.set(sessionId, ready)
+
   proc.on('exit', () => {
     activeProcesses.delete(sessionId)
+    processReadyPromises.delete(sessionId)
     try {
       fs.unlinkSync(mcpConfigPath)
     } catch {
@@ -353,6 +379,7 @@ function killProcess(sessionId: string): void {
   const proc = activeProcesses.get(sessionId)
   if (proc && proc.exitCode === null) proc.kill()
   activeProcesses.delete(sessionId)
+  processReadyPromises.delete(sessionId)
 }
 
 function createChatPanel(
@@ -655,6 +682,11 @@ function wirePanelMessages(
               }
 
               if (commandArgs) {
+                const compactReady = processReadyPromises.get(session.id)
+                if (compactReady) {
+                  await compactReady
+                  processReadyPromises.delete(session.id)
+                }
                 const payload = JSON.stringify({
                   type: 'user',
                   message: { role: 'user', content: [{ type: 'text', text: commandArgs }] },
@@ -725,6 +757,12 @@ function wirePanelMessages(
               title: att.name,
             })
           }
+        }
+
+        const readyPromise = processReadyPromises.get(session.id)
+        if (readyPromise) {
+          await readyPromise
+          processReadyPromises.delete(session.id)
         }
 
         const payload = JSON.stringify({

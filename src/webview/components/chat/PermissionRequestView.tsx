@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { ShieldAlert } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { getBaseCommand } from '../../../shared/shell-utils'
 import type { PermissionRequest } from '../../lib/types'
 
 interface PermissionRequestViewProps {
@@ -35,9 +36,20 @@ export function PermissionRequestView({
 }: PermissionRequestViewProps): React.JSX.Element {
   const [remember, setRemember] = useState(false)
   const summary = getInputSummary(request.toolName, request.toolInput)
+  const isBash = request.toolName === 'Bash'
+
+  const baseCmd = useMemo(
+    () => (isBash ? getBaseCommand(String(request.toolInput.command ?? '')) : null),
+    [isBash, request.toolInput.command],
+  )
+
+  const permissionKey = isBash && baseCmd ? `Bash:${baseCmd}` : request.toolName
+
+  const rememberLabel =
+    isBash && baseCmd ? `Always allow ${baseCmd}` : `Always allow ${request.toolName}`
 
   function respond(allow: boolean): void {
-    onRespond(request.requestId, allow, remember, request.toolName)
+    onRespond(request.requestId, allow, remember, permissionKey)
   }
 
   return (
@@ -45,12 +57,21 @@ export function PermissionRequestView({
       <div className="flex items-start gap-3 rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-3 py-2.5 text-[12px]">
         <ShieldAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500/70" />
         <div className="min-w-0 flex-1 space-y-2">
-          <div className="flex items-baseline gap-2">
-            <span className="font-mono font-medium text-foreground/80">{request.toolName}</span>
-            {summary && (
-              <span className="min-w-0 truncate text-muted-foreground/60">{summary}</span>
-            )}
-          </div>
+          {isBash ? (
+            <div className="space-y-1.5">
+              <span className="font-mono text-[11px] text-muted-foreground/60">Bash</span>
+              <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-[12px] leading-relaxed text-foreground/80">
+                {summary}
+              </pre>
+            </div>
+          ) : (
+            <div className="flex items-baseline gap-2">
+              <span className="font-mono font-medium text-foreground/80">{request.toolName}</span>
+              {summary && (
+                <span className="min-w-0 truncate text-muted-foreground/60">{summary}</span>
+              )}
+            </div>
+          )}
           <div className="flex items-center gap-3">
             <button
               onClick={() => respond(true)}
@@ -74,7 +95,7 @@ export function PermissionRequestView({
                 onChange={(e) => setRemember(e.target.checked)}
                 className="size-3 accent-foreground"
               />
-              <span>Remember</span>
+              <span>{rememberLabel}</span>
             </label>
           </div>
         </div>
