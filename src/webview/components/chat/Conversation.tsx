@@ -202,8 +202,8 @@ function SessionHeader({ meta, isActive }: SessionHeaderProps): React.JSX.Elemen
 // ── Turn ─────────────────────────────────────────────────────────────
 
 function TurnView({ turn }: { turn: Turn }): React.JSX.Element {
-  const images = turn.userAttachments.filter((a: UserAttachment) => a.isImage)
-  const docs = turn.userAttachments.filter((a: UserAttachment) => !a.isImage)
+  const renderableImages = turn.userAttachments.filter((a: UserAttachment) => a.isImage && a.data)
+  const chips = turn.userAttachments.filter((a: UserAttachment) => !a.isImage || !a.data)
   const hasUserContent = turn.userMessage || turn.userAttachments.length > 0
 
   return (
@@ -211,9 +211,9 @@ function TurnView({ turn }: { turn: Turn }): React.JSX.Element {
       {hasUserContent && (
         <div className="flex justify-end gap-3 px-6">
           <div className="max-w-[85%] space-y-1.5">
-            {images.length > 0 && (
+            {renderableImages.length > 0 && (
               <div className="flex flex-wrap justify-end gap-1.5">
-                {images.map((att: UserAttachment, i: number) => (
+                {renderableImages.map((att: UserAttachment, i: number) => (
                   <img
                     key={i}
                     src={`data:${att.mediaType};base64,${att.data}`}
@@ -223,14 +223,18 @@ function TurnView({ turn }: { turn: Turn }): React.JSX.Element {
                 ))}
               </div>
             )}
-            {docs.length > 0 && (
+            {chips.length > 0 && (
               <div className="flex flex-wrap justify-end gap-1.5">
-                {docs.map((att: UserAttachment, i: number) => (
+                {chips.map((att: UserAttachment, i: number) => (
                   <div
                     key={i}
                     className="flex items-center gap-1 rounded-md border border-border/40 bg-muted/30 px-2 py-1 text-[11px]"
                   >
-                    <FileText className="size-3 shrink-0 text-muted-foreground/60" />
+                    {att.isImage ? (
+                      <ImageIcon className="size-3 shrink-0 text-muted-foreground/60" />
+                    ) : (
+                      <FileText className="size-3 shrink-0 text-muted-foreground/60" />
+                    )}
                     <span className="max-w-[160px] truncate text-muted-foreground">
                       {att.name || att.mediaType}
                     </span>
@@ -314,6 +318,11 @@ export function Conversation({
     attachments: Attachment[]
   } | null>(null)
 
+  // Claude Code does not persist image data in the JSONL, so we stash
+  // attachment metadata (name + type only) at send time, keyed by the turn
+  // index the new message will occupy. At send time turns.length IS that index.
+  const [sentAttachments, setSentAttachments] = useState<Map<number, UserAttachment[]>>(new Map())
+
   useEffect(() => {
     if (!isAtBottom.current || !scrollRef.current) return
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight
@@ -372,6 +381,19 @@ export function Conversation({
     setAttachments([])
     // Show message + attachments immediately (optimistic UI)
     setPendingUserMessage({ text, attachments: toSend })
+    // Stash lightweight metadata so the chip persists after the JSONL turn arrives
+    // (Claude Code does not write image data to the JSONL).
+    // turns.length is the 0-based index the new turn will occupy.
+    if (toSend.length > 0) {
+      const idx = turns.length
+      const saved: UserAttachment[] = toSend.map((att) => ({
+        name: att.name,
+        mediaType: att.mediaType,
+        data: '',
+        isImage: att.mediaType.startsWith('image/'),
+      }))
+      setSentAttachments((prev) => new Map(prev).set(idx, saved))
+    }
     // Revoke object URLs after capturing for pending display (data URIs used for rendering)
     toSend.forEach((a) => {
       if (a.previewUrl) URL.revokeObjectURL(a.previewUrl)
@@ -391,17 +413,25 @@ export function Conversation({
           className="relative mx-auto max-w-5xl"
           style={{ height: `${virtualizer.getTotalSize()}px` }}
         >
-          {virtualizer.getVirtualItems().map((virtualItem) => (
-            <div
-              key={virtualItem.key}
-              ref={virtualizer.measureElement}
-              data-index={virtualItem.index}
-              className="absolute left-0 top-0 w-full"
-              style={{ transform: `translateY(${virtualItem.start}px)` }}
-            >
-              <TurnView turn={turns[virtualItem.index]} />
-            </div>
-          ))}
+          {virtualizer.getVirtualItems().map((virtualItem) => {
+            const turn = turns[virtualItem.index]
+            const extra = sentAttachments.get(virtualItem.index)
+            const merged =
+              extra && turn.userAttachments.length === 0
+                ? { ...turn, userAttachments: extra }
+                : turn
+            return (
+              <div
+                key={virtualItem.key}
+                ref={virtualizer.measureElement}
+                data-index={virtualItem.index}
+                className="absolute left-0 top-0 w-full"
+                style={{ transform: `translateY(${virtualItem.start}px)` }}
+              >
+                <TurnView turn={merged} />
+              </div>
+            )
+          })}
         </div>
 
         {/* Pending user message (optimistic display while JSONL is being written) */}
