@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Conversation } from './components/chat/Conversation'
-import type { Turn, SessionMeta, Attachment } from './lib/types'
+import type { Turn, SessionMeta, Attachment, SlashCommand } from './lib/types'
 import { vscodeApi } from './lib/vscode'
 
 interface SessionPayload extends SessionMeta {
@@ -12,15 +12,21 @@ export function App(): React.JSX.Element {
   const [turns, setTurns] = useState<Turn[]>([])
   const [meta, setMeta] = useState<SessionMeta | null>(null)
   const [isActive, setIsActive] = useState(false)
+  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([])
 
   useEffect(() => {
-    const handler = (event: MessageEvent<{ command: string; session?: SessionPayload }>): void => {
+    const handler = (
+      event: MessageEvent<{ command: string; session?: SessionPayload; commands?: SlashCommand[] }>,
+    ): void => {
       const msg = event.data
       if ((msg.command === 'loadSession' || msg.command === 'updateSession') && msg.session) {
         const { turns: newTurns, isActive: active, ...newMeta } = msg.session
         setTurns(newTurns)
         setMeta(newMeta)
         setIsActive(active)
+      }
+      if (msg.command === 'slashCommands' && msg.commands) {
+        setSlashCommands(msg.commands)
       }
     }
 
@@ -49,6 +55,7 @@ export function App(): React.JSX.Element {
           meta={meta}
           isActive={isActive}
           onSendMessage={handleSendMessage}
+          slashCommands={slashCommands}
         />
       ) : (
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">

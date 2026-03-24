@@ -15,7 +15,14 @@ import {
   Check,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
-import type { Turn, SessionMeta, TokenUsage, Attachment, UserAttachment } from '../../lib/types'
+import type {
+  Turn,
+  SessionMeta,
+  TokenUsage,
+  Attachment,
+  UserAttachment,
+  SlashCommand,
+} from '../../lib/types'
 import { BlockRenderer } from './BlockRenderers'
 import { Markdown } from './Markdown'
 
@@ -285,6 +292,7 @@ interface ConversationProps {
   turns: Turn[]
   meta: SessionMeta | null
   isActive: boolean
+  slashCommands: SlashCommand[]
   onSendMessage: (
     text: string,
     attachments: Attachment[],
@@ -297,11 +305,13 @@ export function Conversation({
   turns,
   meta,
   isActive,
+  slashCommands,
   onSendMessage,
 }: ConversationProps): React.JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   const isAtBottom = useRef(true)
   const selectorRef = useRef<HTMLDivElement>(null)
@@ -322,6 +332,24 @@ export function Conversation({
   // attachment metadata (name + type only) at send time, keyed by the turn
   // index the new message will occupy. At send time turns.length IS that index.
   const [sentAttachments, setSentAttachments] = useState<Map<number, UserAttachment[]>>(new Map())
+  const [highlightedIndex, setHighlightedIndex] = useState(0)
+
+  // ── Slash command autocomplete ────────────────────────────────────
+  const showAutocomplete = inputValue.startsWith('/') && !inputValue.includes(' ') && !sending
+  const slashQuery = inputValue.slice(1).toLowerCase()
+  const filteredCommands = showAutocomplete
+    ? slashCommands.filter((cmd) => cmd.name.slice(1).startsWith(slashQuery))
+    : []
+
+  useEffect(() => {
+    setHighlightedIndex(0)
+  }, [slashQuery])
+
+  function selectCommand(name: string): void {
+    setInputValue(name + ' ')
+    setHighlightedIndex(0)
+    inputRef.current?.focus()
+  }
 
   useEffect(() => {
     if (!isAtBottom.current || !scrollRef.current) return
@@ -390,7 +418,7 @@ export function Conversation({
         name: att.name,
         mediaType: att.mediaType,
         data: '',
-        isImage: att.mediaType.startsWith('image/'),
+        isImage: isImageType(att.mediaType),
       }))
       setSentAttachments((prev) => new Map(prev).set(idx, saved))
     }
@@ -477,7 +505,28 @@ export function Conversation({
       </div>
 
       {/* Input area */}
-      <div className="mx-auto w-full max-w-5xl shrink-0 px-4 pb-3 pt-2">
+      <div className="relative mx-auto w-full max-w-5xl shrink-0 px-4 pb-3 pt-2">
+        {/* Slash command autocomplete popup */}
+        {filteredCommands.length > 0 && (
+          <div className="absolute bottom-full left-4 right-4 mb-1 max-h-64 overflow-y-auto rounded-md border border-border/50 bg-popover shadow-md">
+            {filteredCommands.map((cmd, i) => (
+              <button
+                key={cmd.name}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  selectCommand(cmd.name)
+                }}
+                className={cn(
+                  'flex w-full items-center gap-3 px-3 py-2 text-left text-[12px] transition-colors',
+                  i === highlightedIndex ? 'bg-accent' : 'hover:bg-accent/50',
+                )}
+              >
+                <span className="w-36 shrink-0 font-mono text-foreground">{cmd.name}</span>
+                <span className="truncate text-muted-foreground">{cmd.description}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <div
           className={cn(
             'rounded-md border border-input bg-background transition-colors',
@@ -608,10 +657,33 @@ export function Conversation({
               )}
             </div>
             <input
+              ref={inputRef}
               type="text"
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={(e) => {
+                if (filteredCommands.length > 0) {
+                  if (e.key === 'ArrowDown') {
+                    e.preventDefault()
+                    setHighlightedIndex((i) => Math.min(i + 1, filteredCommands.length - 1))
+                    return
+                  }
+                  if (e.key === 'ArrowUp') {
+                    e.preventDefault()
+                    setHighlightedIndex((i) => Math.max(i - 1, 0))
+                    return
+                  }
+                  if (e.key === 'Enter' || e.key === 'Tab') {
+                    e.preventDefault()
+                    selectCommand(filteredCommands[highlightedIndex].name)
+                    return
+                  }
+                  if (e.key === 'Escape') {
+                    e.preventDefault()
+                    setInputValue('')
+                    return
+                  }
+                }
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
                   handleSend()

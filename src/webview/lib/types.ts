@@ -101,3 +101,8 @@ export interface SessionMeta {
 export interface ParsedSession extends SessionMeta {
   turns: Turn[]
 }
+
+export interface SlashCommand {
+  name: string
+  description: string
+}
