@@ -1,15 +1,105 @@
 import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
+import * as os from 'os'
+import * as http from 'http'
 import { spawn, execSync, type ChildProcess } from 'child_process'
 import * as crypto from 'crypto'
 import { getWebviewContent } from './webview-provider'
 import { SessionsProvider, encodeProjectPath, getClaudeProjectsDir } from './sessions-provider'
 import { parseSessionFile } from './session-parser'
-import type { ParsedSession, SlashCommand } from './webview/lib/types'
+import type { ParsedSession, SlashCommand, WorkspaceFile } from './webview/lib/types'
 
 const openPanels = new Map<string, vscode.WebviewPanel>()
 const activeProcesses = new Map<string, ChildProcess>()
+
+// ── Permission HTTP server ────────────────────────────────────────────
+
+interface PendingPermission {
+  res: http.ServerResponse
+  timer: ReturnType<typeof setTimeout>
+}
+
+const pendingPermissions = new Map<string, PendingPermission>()
+let permissionServer: http.Server | null = null
+let permissionPort = 0
+
+function startPermissionServer(): void {
+  permissionServer = http.createServer((req, res) => {
+    if (req.method !== 'POST' || req.url !== '/permission') {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+
+    let body = ''
+    req.on('data', (chunk: Buffer) => {
+      body += chunk.toString()
+    })
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body) as {
+          requestId: string
+          sessionId: string
+          toolName: string
+          toolInput: Record<string, unknown>
+        }
+
+        // Check stored preferences first
+        const prefs =
+          vscode.workspace
+            .getConfiguration('clay')
+            .get<Record<string, 'always_allow' | 'always_deny'>>('toolPermissions') ?? {}
+        const saved = prefs[payload.toolName]
+
+        if (saved === 'always_allow') {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ allow: true }))
+          return
+        }
+        if (saved === 'always_deny') {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ allow: false }))
+          return
+        }
+
+        // Route to the correct panel
+        const panel = openPanels.get(payload.sessionId)
+        if (!panel) {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ allow: false }))
+          return
+        }
+
+        // Hold the response open until the user decides (max 5 min)
+        const timer = setTimeout(() => {
+          pendingPermissions.delete(payload.requestId)
+          try {
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ allow: false }))
+          } catch {
+            // socket may already be gone
+          }
+        }, 300_000)
+
+        pendingPermissions.set(payload.requestId, { res, timer })
+
+        panel.webview.postMessage({
+          command: 'permissionRequest',
+          request: payload,
+        })
+      } catch {
+        res.writeHead(400)
+        res.end()
+      }
+    })
+  })
+
+  permissionServer.listen(0, '127.0.0.1', () => {
+    const addr = permissionServer!.address()
+    permissionPort = typeof addr === 'object' && addr !== null ? addr.port : 0
+  })
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -128,6 +218,36 @@ async function fetchSlashCommands(cwd: string): Promise<SlashCommand[]> {
   return [...commands.values()].sort((a, b) => a.name.localeCompare(b.name))
 }
 
+async function listWorkspaceFiles(workspacePath: string): Promise<WorkspaceFile[]> {
+  const EXCLUDE = '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/.next/**,**/build/**}'
+  const uris = await vscode.workspace.findFiles('**/*', EXCLUDE, 500)
+
+  const dirSet = new Set<string>()
+  for (const uri of uris) {
+    let dir = path.dirname(uri.fsPath)
+    while (dir !== workspacePath && dir.startsWith(workspacePath)) {
+      dirSet.add(dir)
+      dir = path.dirname(dir)
+    }
+  }
+
+  const files: WorkspaceFile[] = uris.map((uri) => ({
+    path: uri.fsPath,
+    relativePath: path.relative(workspacePath, uri.fsPath),
+    name: path.basename(uri.fsPath),
+    isDirectory: false,
+  }))
+
+  const dirs: WorkspaceFile[] = Array.from(dirSet).map((dir) => ({
+    path: dir,
+    relativePath: path.relative(workspacePath, dir),
+    name: path.basename(dir),
+    isDirectory: true,
+  }))
+
+  return [...files, ...dirs].sort((a, b) => a.relativePath.localeCompare(b.relativePath))
+}
+
 function getJsonlPath(workspacePath: string, sessionId: string): string {
   return path.join(getClaudeProjectsDir(), encodeProjectPath(workspacePath), `${sessionId}.jsonl`)
 }
@@ -178,6 +298,23 @@ function spawnClaudeProcess(
   const modelArgs = model ? ['--model', model] : []
   const effortArgs = effort ? ['--effort', effort] : []
 
+  // Write a per-session MCP config that routes permission prompts through our
+  // local HTTP server. __dirname resolves to dist/ in the esbuild bundle.
+  const mcpConfigPath = path.join(os.tmpdir(), `clay-mcp-${sessionId}.json`)
+  const mcpConfig = {
+    mcpServers: {
+      permissions: {
+        command: 'node',
+        args: [path.join(__dirname, 'permission-server.js')],
+        env: {
+          PERMISSION_PORT: String(permissionPort),
+          SESSION_ID: sessionId,
+        },
+      },
+    },
+  }
+  fs.writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig))
+
   const proc = spawn(
     'claude',
     [
@@ -187,6 +324,10 @@ function spawnClaudeProcess(
       '--output-format',
       'stream-json',
       '--verbose',
+      '--permission-prompt-tool',
+      'permissions:prompt_for_permission',
+      '--mcp-config',
+      mcpConfigPath,
       ...modeArgs,
       ...modelArgs,
       ...effortArgs,
@@ -198,6 +339,11 @@ function spawnClaudeProcess(
 
   proc.on('exit', () => {
     activeProcesses.delete(sessionId)
+    try {
+      fs.unlinkSync(mcpConfigPath)
+    } catch {
+      // ignore — file may already be gone
+    }
   })
 
   return proc
@@ -296,13 +442,46 @@ interface AttachmentPayload {
   isText: boolean
 }
 
+interface SessionState {
+  id: string
+  spawnMode: 'new' | 'resume'
+}
+
+function postSystemMessage(
+  panel: vscode.WebviewPanel,
+  text: string,
+  level: 'info' | 'warning' = 'info',
+): void {
+  panel.webview.postMessage({
+    command: 'systemMessage',
+    block: { kind: 'system_message', text, level },
+  })
+}
+
+function resolveCustomCommand(commandName: string, workspacePath: string): string | null {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? ''
+  const candidates = [
+    path.join(workspacePath, '.claude', 'commands', `${commandName}.md`),
+    path.join(home, '.claude', 'commands', `${commandName}.md`),
+  ]
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      try {
+        return fs.readFileSync(candidate, 'utf8')
+      } catch {
+        return null
+      }
+    }
+  }
+  return null
+}
+
 function wirePanelMessages(
   panel: vscode.WebviewPanel,
-  sessionId: string,
+  session: SessionState,
   workspacePath: string,
   getInitialSession: () => Promise<ParsedSession | null>,
   panelCleanups: Map<string, () => void>,
-  spawnMode: 'new' | 'resume' = 'resume',
 ): vscode.Disposable {
   return panel.webview.onDidReceiveMessage(
     async (msg: {
@@ -313,16 +492,109 @@ function wirePanelMessages(
       effort?: string | null
       filePath?: string
       line?: number
+      requestId?: string
+      allow?: boolean
+      remember?: boolean
+      toolName?: string
+      toolUseId?: string
+      answer?: string
     }) => {
+      if (msg.command === 'permissionResponse') {
+        const { requestId, allow, remember, toolName } = msg
+        if (!requestId) return
+
+        const pending = pendingPermissions.get(requestId)
+        if (pending) {
+          clearTimeout(pending.timer)
+          pendingPermissions.delete(requestId)
+          try {
+            pending.res.writeHead(200, { 'Content-Type': 'application/json' })
+            pending.res.end(JSON.stringify({ allow: allow ?? false }))
+          } catch {
+            // socket may already be gone
+          }
+        }
+
+        if (remember && toolName) {
+          const config = vscode.workspace.getConfiguration('clay')
+          const current = config.get<Record<string, string>>('toolPermissions') ?? {}
+          void config.update(
+            'toolPermissions',
+            { ...current, [toolName]: allow ? 'always_allow' : 'always_deny' },
+            vscode.ConfigurationTarget.Global,
+          )
+        }
+        return
+      }
+
+      if (msg.command === 'answerQuestion') {
+        const { toolUseId, answer } = msg
+        if (!toolUseId || answer === undefined) return
+        const proc = activeProcesses.get(session.id)
+        if (!proc || proc.exitCode !== null) return
+        const payload = JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: toolUseId, content: answer }],
+          },
+        })
+        proc.stdin?.write(payload + '\n')
+        return
+      }
+
       if (msg.command === 'ready') {
         const parsed = await getInitialSession()
         if (parsed) {
-          const isActive = activeProcesses.has(sessionId)
+          const isActive = activeProcesses.has(session.id)
           sendSession(panel, parsed, isActive, 'loadSession')
         }
         fetchSlashCommands(workspacePath).then((commands) => {
           panel.webview.postMessage({ command: 'slashCommands', commands })
         })
+        listWorkspaceFiles(workspacePath).then((files) => {
+          panel.webview.postMessage({ command: 'workspaceFiles', files })
+        })
+        return
+      }
+
+      if (msg.command === 'getWorkspaceFile') {
+        const filePath = msg.filePath
+        if (!filePath) return
+        const name = path.basename(filePath)
+        const ext = path.extname(name).slice(1).toLowerCase()
+        const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp'])
+        try {
+          if (IMAGE_EXTS.has(ext)) {
+            const data = fs.readFileSync(filePath).toString('base64')
+            const mediaType =
+              ext === 'jpg' || ext === 'jpeg'
+                ? 'image/jpeg'
+                : ext === 'png'
+                  ? 'image/png'
+                  : ext === 'gif'
+                    ? 'image/gif'
+                    : 'image/webp'
+            panel.webview.postMessage({
+              command: 'workspaceFileContent',
+              name,
+              mediaType,
+              data,
+              isText: false,
+            })
+          } else {
+            const data = fs.readFileSync(filePath, 'utf8')
+            panel.webview.postMessage({
+              command: 'workspaceFileContent',
+              name,
+              mediaType: 'text/plain',
+              data,
+              isText: true,
+            })
+          }
+        } catch {
+          // unreadable or binary — ignore silently
+        }
         return
       }
 
@@ -346,26 +618,89 @@ function wirePanelMessages(
       }
 
       if (msg.command === 'sendMessage') {
-        const text = (msg.text ?? '').trim()
+        let text = (msg.text ?? '').trim()
         const attachments = msg.attachments ?? []
         if (!text && attachments.length === 0) return
 
-        // Ensure a process is running
-        let proc = activeProcesses.get(sessionId)
+        // ── Slash command router ───────────────────────────────────────
+        if (text.startsWith('/') && attachments.length === 0) {
+          const spaceIdx = text.indexOf(' ')
+          const commandName = (
+            spaceIdx === -1 ? text.slice(1) : text.slice(1, spaceIdx)
+          ).toLowerCase()
+          const commandArgs = spaceIdx === -1 ? '' : text.slice(spaceIdx + 1).trim()
+
+          switch (commandName) {
+            case 'clear': {
+              panel.dispose()
+              void vscode.commands.executeCommand('clay.newSession')
+              return
+            }
+
+            case 'compact': {
+              killProcess(session.id)
+              const proc = spawnClaudeProcess(
+                'resume',
+                session.id,
+                workspacePath,
+                msg.model,
+                msg.effort ?? undefined,
+              )
+              session.spawnMode = 'resume'
+
+              if (!panelCleanups.has(session.id)) {
+                const jsonlPath = getJsonlPath(workspacePath, session.id)
+                const cleanupWatcher = setupSessionWatcher(jsonlPath, panel, true)
+                panelCleanups.set(session.id, cleanupWatcher)
+              }
+
+              if (commandArgs) {
+                const payload = JSON.stringify({
+                  type: 'user',
+                  message: { role: 'user', content: [{ type: 'text', text: commandArgs }] },
+                })
+                proc.stdin?.write(payload + '\n')
+              }
+
+              postSystemMessage(panel, 'Context reloaded.')
+              return
+            }
+
+            default: {
+              // Try custom commands from .claude/commands/
+              const template = resolveCustomCommand(commandName, workspacePath)
+              if (template) {
+                text = template.replace(/\$ARGUMENTS/g, commandArgs)
+                // Fall through to normal send logic below
+                break
+              }
+
+              // Unsupported built-in command
+              postSystemMessage(
+                panel,
+                `/${commandName} is only available in the interactive Claude Code terminal.`,
+                'warning',
+              )
+              return
+            }
+          }
+        }
+
+        // ── Normal message send ────────────────────────────────────────
+        let proc = activeProcesses.get(session.id)
         if (!proc || proc.exitCode !== null) {
           proc = spawnClaudeProcess(
-            spawnMode,
-            sessionId,
+            session.spawnMode,
+            session.id,
             workspacePath,
             msg.model,
             msg.effort ?? undefined,
           )
 
-          // Set up file watcher if not already watching
-          if (!panelCleanups.has(sessionId)) {
-            const jsonlPath = getJsonlPath(workspacePath, sessionId)
+          if (!panelCleanups.has(session.id)) {
+            const jsonlPath = getJsonlPath(workspacePath, session.id)
             const cleanup = setupSessionWatcher(jsonlPath, panel, true)
-            panelCleanups.set(sessionId, cleanup)
+            panelCleanups.set(session.id, cleanup)
           }
         }
 
@@ -405,6 +740,8 @@ function wirePanelMessages(
 // ── Extension lifecycle ──────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext): void {
+  startPermissionServer()
+
   const sessionsProvider = new SessionsProvider()
   const treeView = vscode.window.createTreeView('claySessions', {
     treeDataProvider: sessionsProvider,
@@ -443,10 +780,12 @@ export function activate(context: vscode.ExtensionContext): void {
         return
       }
 
+      const sessionState: SessionState = { id: sessionId, spawnMode: 'resume' }
+
       // Wire messages (handles 'ready' + 'sendMessage')
       const msgDisposable = wirePanelMessages(
         panel,
-        sessionId,
+        sessionState,
         workspacePath,
         async () => (parsed ? parsed : parseSessionFile(session.jsonlPath)),
         panelCleanups,
@@ -462,7 +801,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
       panel.onDidDispose(() => {
         msgDisposable.dispose()
-        cleanupPanel(sessionId)
+        cleanupPanel(sessionState.id)
       })
     },
   )
@@ -493,14 +832,15 @@ export function activate(context: vscode.ExtensionContext): void {
       turns: [],
     }
 
+    const sessionState: SessionState = { id: sessionId, spawnMode: 'new' }
+
     // Wire messages (handles 'ready' + 'sendMessage')
     const msgDisposable = wirePanelMessages(
       panel,
-      sessionId,
+      sessionState,
       workspacePath,
       async () => emptySession,
       panelCleanups,
-      'new',
     )
 
     // Send immediately
@@ -514,7 +854,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     panel.onDidDispose(() => {
       msgDisposable.dispose()
-      cleanupPanel(sessionId)
+      cleanupPanel(sessionState.id)
     })
   })
 
@@ -553,6 +893,19 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
+  // Deny all pending permission requests before closing
+  for (const [, pending] of pendingPermissions) {
+    clearTimeout(pending.timer)
+    try {
+      pending.res.writeHead(200, { 'Content-Type': 'application/json' })
+      pending.res.end(JSON.stringify({ allow: false }))
+    } catch {
+      // socket may already be gone
+    }
+  }
+  pendingPermissions.clear()
+  permissionServer?.close()
+
   for (const panel of openPanels.values()) {
     panel.dispose()
   }

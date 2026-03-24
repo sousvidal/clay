@@ -49,12 +49,19 @@ export interface CompactionBlock {
   summary: string
 }
 
+export interface SystemMessageBlock {
+  kind: 'system_message'
+  text: string
+  level: 'info' | 'warning'
+}
+
 export type ContentBlock =
   | TextBlock
   | ThinkingBlock
   | ToolCallBlock
   | SubAgentBlock
   | CompactionBlock
+  | SystemMessageBlock
 
 export interface TokenUsage {
   inputTokens: number
@@ -105,4 +112,18 @@ export interface ParsedSession extends SessionMeta {
 export interface SlashCommand {
   name: string
   description: string
+}
+
+export interface WorkspaceFile {
+  path: string
+  relativePath: string
+  name: string
+  isDirectory: boolean
+}
+
+export interface PermissionRequest {
+  requestId: string
+  sessionId: string
+  toolName: string
+  toolInput: Record<string, unknown>
 }

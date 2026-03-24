@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { vscodeApi } from '../../lib/vscode'
 import {
   ChevronRight,
@@ -14,6 +14,8 @@ import {
   Brain,
   Layers,
   Minimize2,
+  Info,
+  AlertTriangle,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import type {
@@ -23,6 +25,7 @@ import type {
   ToolCallBlock,
   SubAgentBlock,
   CompactionBlock,
+  SystemMessageBlock,
   ToolCall,
 } from '../../lib/types'
 import { Markdown } from './Markdown'
@@ -53,13 +56,14 @@ function getToolIcon(name: string): React.ReactNode {
   }
 }
 
-function getOpenablePath(toolCall: ToolCall): string | null {
+function getFileContext(toolCall: ToolCall): { path: string; line?: number } | null {
   const inp = toolCall.input
   switch (toolCall.name) {
     case 'Read':
+      return { path: inp.file_path as string, line: inp.offset as number | undefined }
     case 'Write':
     case 'Edit':
-      return (inp.file_path as string) ?? null
+      return { path: inp.file_path as string }
     default:
       return null
   }
@@ -93,14 +97,16 @@ export function ToolCallItemView({ toolCall }: { toolCall: ToolCall }): React.JS
   const [expanded, setExpanded] = useState(false)
   const isRunning = toolCall.status === 'running'
   const summary = getToolSummary(toolCall)
-  const openablePath = getOpenablePath(toolCall)
-  const lineNumber =
-    toolCall.name === 'Read' ? (toolCall.input.offset as number | undefined) : undefined
+  const fileContext = getFileContext(toolCall)
 
   function handleOpenFile(e: React.MouseEvent): void {
     e.stopPropagation()
-    if (!openablePath) return
-    vscodeApi.postMessage({ command: 'openFile', filePath: openablePath, line: lineNumber })
+    if (!fileContext) return
+    vscodeApi.postMessage({
+      command: 'openFile',
+      filePath: fileContext.path,
+      line: fileContext.line,
+    })
   }
 
   return (
@@ -117,7 +123,7 @@ export function ToolCallItemView({ toolCall }: { toolCall: ToolCall }): React.JS
         <span className="text-muted-foreground">{getToolIcon(toolCall.name)}</span>
         <span className="font-mono font-medium text-foreground/80">{toolCall.name}</span>
         {summary &&
-          (openablePath ? (
+          (fileContext ? (
             <button
               onClick={handleOpenFile}
               className="min-w-0 truncate font-mono text-muted-foreground/60 hover:text-foreground/80 hover:underline"
@@ -193,7 +199,148 @@ export function ThinkingBlockView({ block }: { block: ThinkingBlock }): React.JS
   )
 }
 
+// ── AskUserQuestion renderer ─────────────────────────────────────────
+
+interface QuestionOption {
+  label: string
+  description: string
+}
+
+function AskUserQuestionView({ toolCall }: { toolCall: ToolCall }): React.JSX.Element {
+  const question = String(toolCall.input.question ?? '')
+  const options = (toolCall.input.options ?? []) as QuestionOption[]
+  const multiSelect = Boolean(toolCall.input.multiSelect)
+
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [showOther, setShowOther] = useState(options.length === 0)
+  const [otherText, setOtherText] = useState('')
+  const [answered, setAnswered] = useState(false)
+  const otherInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (showOther) otherInputRef.current?.focus()
+  }, [showOther])
+
+  function submit(answer: string): void {
+    if (!answer.trim() || answered) return
+    setAnswered(true)
+    vscodeApi.postMessage({
+      command: 'answerQuestion',
+      toolUseId: toolCall.id,
+      answer: answer.trim(),
+    })
+  }
+
+  function handleOptionClick(label: string): void {
+    if (multiSelect) {
+      setSelected((prev) => {
+        const next = new Set(prev)
+        if (next.has(label)) {
+          next.delete(label)
+        } else {
+          next.add(label)
+        }
+        return next
+      })
+    } else {
+      submit(label)
+    }
+  }
+
+  if (answered) {
+    return (
+      <div className="rounded-md border border-blue-500/20 bg-blue-500/[0.04] px-3 py-2.5 text-[12px]">
+        <p className="font-medium text-foreground/80">{question}</p>
+        <p className="mt-1 italic text-muted-foreground/60">Answered — waiting for Claude…</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-2.5 rounded-md border border-blue-500/30 bg-blue-500/[0.05] px-3 py-2.5 text-[12px]">
+      <p className="font-medium text-foreground/80">{question}</p>
+
+      {options.length > 0 && !showOther && (
+        <div className="space-y-1.5">
+          {options.map((opt) => (
+            <button
+              key={opt.label}
+              onClick={() => handleOptionClick(opt.label)}
+              className={cn(
+                'w-full rounded border px-2.5 py-1.5 text-left transition-colors',
+                multiSelect && selected.has(opt.label)
+                  ? 'border-blue-500/40 bg-blue-500/10 text-foreground'
+                  : 'border-border/30 text-foreground/80 hover:bg-muted/20',
+              )}
+            >
+              <span className="font-medium">{opt.label}</span>
+              {opt.description && (
+                <span className="ml-2 text-muted-foreground/60">{opt.description}</span>
+              )}
+            </button>
+          ))}
+          <button
+            onClick={() => {
+              setShowOther(true)
+              setSelected(new Set())
+            }}
+            className="w-full rounded border border-border/20 px-2.5 py-1.5 text-left text-muted-foreground/60 transition-colors hover:bg-muted/20"
+          >
+            Other…
+          </button>
+        </div>
+      )}
+
+      {multiSelect && !showOther && selected.size > 0 && (
+        <button
+          onClick={() => submit([...selected].join(', '))}
+          className="rounded bg-foreground/10 px-2.5 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-foreground/20"
+        >
+          Send
+        </button>
+      )}
+
+      {showOther && (
+        <div className="flex items-center gap-2">
+          {options.length > 0 && (
+            <button
+              onClick={() => setShowOther(false)}
+              className="shrink-0 text-[11px] text-muted-foreground/50 hover:text-muted-foreground"
+            >
+              ← Back
+            </button>
+          )}
+          <input
+            ref={otherInputRef}
+            type="text"
+            value={otherText}
+            onChange={(e) => setOtherText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                submit(otherText)
+              }
+            }}
+            className="min-w-0 flex-1 rounded border border-input bg-background/60 px-2 py-1 text-[12px] text-foreground outline-none placeholder:text-muted-foreground/50"
+            placeholder="Your answer…"
+          />
+          <button
+            onClick={() => submit(otherText)}
+            disabled={!otherText.trim()}
+            className="rounded bg-foreground/10 px-2.5 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-foreground/20 disabled:opacity-40"
+          >
+            Send
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function ToolCallView({ block }: { block: ToolCallBlock }): React.JSX.Element {
+  if (block.toolCall.name === 'AskUserQuestion' && block.toolCall.status === 'running') {
+    return <AskUserQuestionView toolCall={block.toolCall} />
+  }
   return <ToolCallItemView toolCall={block.toolCall} />
 }
 
@@ -302,6 +449,25 @@ export function SubAgentView({ block }: { block: SubAgentBlock }): React.JSX.Ele
   )
 }
 
+export function SystemMessageView({ block }: { block: SystemMessageBlock }): React.JSX.Element {
+  const isWarning = block.level === 'warning'
+  return (
+    <div className="flex items-center gap-3 px-6 py-2">
+      <div className="h-px flex-1 bg-border/30" />
+      <div
+        className={cn(
+          'flex items-center gap-1.5 text-[10px]',
+          isWarning ? 'text-yellow-500/60' : 'text-muted-foreground/40',
+        )}
+      >
+        {isWarning ? <AlertTriangle className="size-2.5" /> : <Info className="size-2.5" />}
+        <span>{block.text}</span>
+      </div>
+      <div className="h-px flex-1 bg-border/30" />
+    </div>
+  )
+}
+
 export function BlockRenderer({ block }: { block: ContentBlock }): React.JSX.Element | null {
   switch (block.kind) {
     case 'text':
@@ -314,6 +480,8 @@ export function BlockRenderer({ block }: { block: ContentBlock }): React.JSX.Ele
       return <SubAgentView block={block} />
     case 'compaction':
       return <CompactionView block={block} />
+    case 'system_message':
+      return <SystemMessageView block={block} />
     default:
       return null
   }

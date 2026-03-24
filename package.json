@@ -76,16 +76,33 @@
           "group": "inline"
         }
       ]
+    },
+    "configuration": {
+      "title": "Clay",
+      "properties": {
+        "clay.toolPermissions": {
+          "type": "object",
+          "default": {},
+          "description": "Per-tool permission overrides. Set a tool name to 'always_allow' or 'always_deny' to skip the prompt.",
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "always_allow",
+              "always_deny"
+            ]
+          }
+        }
+      }
     }
   },
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",
     "typecheck": "tsc --noEmit",
-    "build:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --sourcemap",
+    "build:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --sourcemap && esbuild src/permission-server.ts --bundle --outfile=dist/permission-server.js --format=cjs --platform=node --sourcemap",
     "build:webview": "vite build",
     "build": "npm run typecheck && npm run build:extension && npm run build:webview",
-    "watch:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --sourcemap --watch",
+    "watch:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --sourcemap --watch & esbuild src/permission-server.ts --bundle --outfile=dist/permission-server.js --format=cjs --platform=node --sourcemap --watch",
     "watch:webview": "vite build --watch",
     "dev": "npm run watch:extension & npm run watch:webview",
     "package": "vsce package",

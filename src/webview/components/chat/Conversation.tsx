@@ -5,6 +5,7 @@ import {
   User,
   GitBranch,
   FolderOpen,
+  Folder,
   ArrowUp,
   Loader2,
   Paperclip,
@@ -22,9 +23,13 @@ import type {
   Attachment,
   UserAttachment,
   SlashCommand,
+  WorkspaceFile,
+  PermissionRequest,
 } from '../../lib/types'
 import { BlockRenderer } from './BlockRenderers'
 import { Markdown } from './Markdown'
+import { PermissionRequestView } from './PermissionRequestView'
+import { vscodeApi } from '../../lib/vscode'
 
 // ── Model / effort config ─────────────────────────────────────────────
 
@@ -293,11 +298,19 @@ interface ConversationProps {
   meta: SessionMeta | null
   isActive: boolean
   slashCommands: SlashCommand[]
+  workspaceFiles: WorkspaceFile[]
   onSendMessage: (
     text: string,
     attachments: Attachment[],
     model: string,
     effort: string | null,
+  ) => void
+  pendingPermission: PermissionRequest | null
+  onPermissionResponse: (
+    requestId: string,
+    allow: boolean,
+    remember: boolean,
+    toolName: string,
   ) => void
 }
 
@@ -306,7 +319,10 @@ export function Conversation({
   meta,
   isActive,
   slashCommands,
+  workspaceFiles,
   onSendMessage,
+  pendingPermission,
+  onPermissionResponse,
 }: ConversationProps): React.JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
@@ -333,6 +349,7 @@ export function Conversation({
   // index the new message will occupy. At send time turns.length IS that index.
   const [sentAttachments, setSentAttachments] = useState<Map<number, UserAttachment[]>>(new Map())
   const [highlightedIndex, setHighlightedIndex] = useState(0)
+  const [fileHighlightedIndex, setFileHighlightedIndex] = useState(0)
 
   // ── Slash command autocomplete ────────────────────────────────────
   const showAutocomplete = inputValue.startsWith('/') && !inputValue.includes(' ') && !sending
@@ -349,6 +366,70 @@ export function Conversation({
     setInputValue(name + ' ')
     setHighlightedIndex(0)
     inputRef.current?.focus()
+  }
+
+  // ── File mention autocomplete (@) ─────────────────────────────────
+  const atMatch = !sending ? /@(\S*)$/.exec(inputValue) : null
+  const fileQuery = atMatch ? atMatch[1].toLowerCase() : ''
+  const filteredFiles = atMatch
+    ? workspaceFiles
+        .filter(
+          (f) =>
+            f.relativePath.toLowerCase().includes(fileQuery) ||
+            f.name.toLowerCase().includes(fileQuery),
+        )
+        .slice(0, 50)
+    : []
+
+  useEffect(() => {
+    setFileHighlightedIndex(0)
+  }, [fileQuery])
+
+  useEffect(() => {
+    function onWorkspaceFileContent(
+      event: MessageEvent<{
+        command: string
+        name?: string
+        mediaType?: string
+        data?: string
+        isText?: boolean
+      }>,
+    ): void {
+      const msg = event.data
+      if (
+        msg.command !== 'workspaceFileContent' ||
+        !msg.name ||
+        !msg.mediaType ||
+        msg.data === undefined
+      )
+        return
+      const att: Attachment = {
+        id: crypto.randomUUID(),
+        name: msg.name,
+        mediaType: msg.mediaType,
+        data: msg.data,
+        isText: msg.isText ?? false,
+        previewUrl: msg.mediaType.startsWith('image/')
+          ? `data:${msg.mediaType};base64,${msg.data}`
+          : undefined,
+      }
+      setAttachments((prev) => [...prev, att])
+    }
+    window.addEventListener('message', onWorkspaceFileContent)
+    return () => window.removeEventListener('message', onWorkspaceFileContent)
+  }, [])
+
+  function selectFile(file: WorkspaceFile): void {
+    if (file.isDirectory) {
+      setInputValue((prev) => prev.replace(/@\S*$/, `@${file.relativePath}/`))
+      setFileHighlightedIndex(0)
+      inputRef.current?.focus()
+    } else {
+      setInputValue((prev) => prev.replace(/@\S*$/, ''))
+      setFileHighlightedIndex(0)
+      inputRef.current?.focus()
+      vscodeApi.postMessage({ command: 'getWorkspaceFile', filePath: file.path })
+    }
   }
 
   useEffect(() => {
@@ -504,6 +585,11 @@ export function Conversation({
         )}
       </div>
 
+      {/* Permission request banner */}
+      {pendingPermission && (
+        <PermissionRequestView request={pendingPermission} onRespond={onPermissionResponse} />
+      )}
+
       {/* Input area */}
       <div className="relative mx-auto w-full max-w-5xl shrink-0 px-4 pb-3 pt-2">
         {/* Slash command autocomplete popup */}
@@ -523,6 +609,33 @@ export function Conversation({
               >
                 <span className="w-36 shrink-0 font-mono text-foreground">{cmd.name}</span>
                 <span className="truncate text-muted-foreground">{cmd.description}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {filteredFiles.length > 0 && (
+          <div className="absolute bottom-full left-4 right-4 mb-1 max-h-64 overflow-y-auto rounded-md border border-border/50 bg-popover shadow-md">
+            {filteredFiles.map((file, i) => (
+              <button
+                key={file.path}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  selectFile(file)
+                }}
+                className={cn(
+                  'flex w-full items-center gap-3 px-3 py-2 text-left text-[12px] transition-colors',
+                  i === fileHighlightedIndex ? 'bg-accent' : 'hover:bg-accent/50',
+                )}
+              >
+                {file.isDirectory ? (
+                  <Folder className="size-3 shrink-0 text-muted-foreground/60" />
+                ) : (
+                  <FileText className="size-3 shrink-0 text-muted-foreground/60" />
+                )}
+                <span className="min-w-0 flex-1 truncate font-mono text-foreground">
+                  {file.relativePath}
+                </span>
+                {file.isDirectory && <span className="text-muted-foreground/40">›</span>}
               </button>
             ))}
           </div>
@@ -662,6 +775,28 @@ export function Conversation({
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={(e) => {
+                if (filteredFiles.length > 0) {
+                  if (e.key === 'ArrowDown') {
+                    e.preventDefault()
+                    setFileHighlightedIndex((i) => Math.min(i + 1, filteredFiles.length - 1))
+                    return
+                  }
+                  if (e.key === 'ArrowUp') {
+                    e.preventDefault()
+                    setFileHighlightedIndex((i) => Math.max(i - 1, 0))
+                    return
+                  }
+                  if (e.key === 'Enter' || e.key === 'Tab') {
+                    e.preventDefault()
+                    selectFile(filteredFiles[fileHighlightedIndex])
+                    return
+                  }
+                  if (e.key === 'Escape') {
+                    e.preventDefault()
+                    setInputValue((prev) => prev.replace(/@\S*$/, ''))
+                    return
+                  }
+                }
                 if (filteredCommands.length > 0) {
                   if (e.key === 'ArrowDown') {
                     e.preventDefault()
@@ -675,7 +810,12 @@ export function Conversation({
                   }
                   if (e.key === 'Enter' || e.key === 'Tab') {
                     e.preventDefault()
-                    selectCommand(filteredCommands[highlightedIndex].name)
+                    const selected = filteredCommands[highlightedIndex]
+                    if (e.key === 'Enter' && selected.name.slice(1) === slashQuery) {
+                      handleSend()
+                    } else {
+                      selectCommand(selected.name)
+                    }
                     return
                   }
                   if (e.key === 'Escape') {
