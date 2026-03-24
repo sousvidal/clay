@@ -385,7 +385,7 @@ export function MockConversation(): React.JSX.Element {
           </button>
           <input
             type="text"
-            placeholder="Message Clay..."
+            placeholder="Message Claude..."
             className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground/60"
           />
           <button className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/40 transition-colors hover:bg-foreground/10 hover:text-foreground">
