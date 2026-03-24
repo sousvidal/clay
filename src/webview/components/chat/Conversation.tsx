@@ -14,6 +14,7 @@ import {
   X,
   ChevronDown,
   Check,
+  ClipboardList,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import type {
@@ -25,10 +26,13 @@ import type {
   SlashCommand,
   WorkspaceFile,
   PermissionRequest,
+  SavedPlan,
+  ContentBlock,
 } from '../../lib/types'
 import { BlockRenderer } from './BlockRenderers'
 import { Markdown } from './Markdown'
 import { PermissionRequestView } from './PermissionRequestView'
+import { PlanSheet } from './PlanSheet'
 import { vscodeApi } from '../../lib/vscode'
 
 // ── Model / effort config ─────────────────────────────────────────────
@@ -47,6 +51,10 @@ const EFFORTS = [
 ] as const
 
 // ── Helpers ──────────────────────────────────────────────────────────
+
+function stripPlanTags(text: string): string {
+  return text.replace(/<plan>[\s\S]*?<\/plan>/g, '').trim()
+}
 
 function formatRelativeTime(timestamp: string): string {
   if (!timestamp) return ''
@@ -181,6 +189,9 @@ interface SessionHeaderProps {
   isActive: boolean
   isProcessing: boolean
   totalTokens: TokenUsage | null
+  savedPlans: SavedPlan[]
+  onLoadSavedPlan: (planId: string) => void
+  onNewPlan: () => void
 }
 
 function SessionHeader({
@@ -188,8 +199,24 @@ function SessionHeader({
   isActive,
   isProcessing,
   totalTokens,
+  savedPlans,
+  onLoadSavedPlan,
+  onNewPlan,
 }: SessionHeaderProps): React.JSX.Element {
   const cacheTotal = (totalTokens?.cacheReadTokens ?? 0) + (totalTokens?.cacheCreationTokens ?? 0)
+  const [plansOpen, setPlansOpen] = useState(false)
+  const plansRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!plansOpen) return
+    function onPointerDown(e: PointerEvent): void {
+      if (plansRef.current && !plansRef.current.contains(e.target as Node)) {
+        setPlansOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [plansOpen])
 
   return (
     <div className="flex shrink-0 items-center gap-3 border-b border-border/30 px-4 py-2 text-[11px] text-muted-foreground/50">
@@ -219,6 +246,52 @@ function SessionHeader({
           {basename(meta.cwd)}
         </span>
       )}
+
+      {/* Plans button */}
+      <div ref={plansRef} className="relative">
+        <button
+          onClick={() => setPlansOpen((prev) => !prev)}
+          className="relative flex items-center gap-1 rounded px-1 py-0.5 transition-colors hover:bg-foreground/5 hover:text-muted-foreground/70"
+          title="Plans"
+        >
+          <ClipboardList className="size-3" />
+          {savedPlans.length > 0 && (
+            <span className="flex size-3.5 items-center justify-center rounded-full bg-foreground/10 text-[8px] font-medium">
+              {savedPlans.length}
+            </span>
+          )}
+        </button>
+        {plansOpen && (
+          <div className="absolute left-0 top-full z-30 mt-1 min-w-[200px] rounded-md border border-border/50 bg-popover p-1 shadow-md">
+            <button
+              onClick={() => {
+                setPlansOpen(false)
+                onNewPlan()
+              }}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent"
+            >
+              + New plan
+            </button>
+            {savedPlans.length > 0 && <div className="my-1 border-t border-border/30" />}
+            {savedPlans.map((plan) => (
+              <button
+                key={plan.id}
+                onClick={() => {
+                  setPlansOpen(false)
+                  onLoadSavedPlan(plan.id)
+                }}
+                className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-[11px] transition-colors hover:bg-accent"
+              >
+                <span className="min-w-0 truncate text-foreground">{plan.title}</span>
+                <span className="shrink-0 text-[9px] text-muted-foreground/40">
+                  {formatRelativeTime(plan.createdAt)}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
       {totalTokens && (
         <span className="ml-auto flex items-center gap-2">
           <span>↑ {fmtTokens(totalTokens.inputTokens + cacheTotal)}</span>
@@ -232,10 +305,21 @@ function SessionHeader({
 
 // ── Turn ─────────────────────────────────────────────────────────────
 
-function TurnView({ turn }: { turn: Turn }): React.JSX.Element {
+function stripPlanTagsFromBlock(block: ContentBlock): ContentBlock {
+  if (block.kind !== 'text') return block
+  const stripped = stripPlanTags(block.text)
+  if (!stripped) return { ...block, text: '' }
+  return { ...block, text: stripped }
+}
+
+function TurnView({ turn, planMode }: { turn: Turn; planMode: boolean }): React.JSX.Element {
   const renderableImages = turn.userAttachments.filter((a: UserAttachment) => a.isImage && a.data)
   const chips = turn.userAttachments.filter((a: UserAttachment) => !a.isImage || !a.data)
   const hasUserContent = turn.userMessage || turn.userAttachments.length > 0
+
+  const displayBlocks = planMode
+    ? turn.contentBlocks.map(stripPlanTagsFromBlock).filter((b) => b.kind !== 'text' || b.text)
+    : turn.contentBlocks
 
   return (
     <div className="space-y-6 py-4">
@@ -285,7 +369,7 @@ function TurnView({ turn }: { turn: Turn }): React.JSX.Element {
         </div>
       )}
 
-      {turn.contentBlocks.length > 0 && (
+      {displayBlocks.length > 0 && (
         <div className="flex gap-3 px-6 pb-4">
           <div className="flex size-7 shrink-0 items-center justify-center rounded-full border border-border bg-card text-foreground/70">
             <Bot className="size-3.5" />
@@ -298,7 +382,7 @@ function TurnView({ turn }: { turn: Turn }): React.JSX.Element {
             </div>
 
             <div className="space-y-2">
-              {turn.contentBlocks.map((block, i) => (
+              {displayBlocks.map((block, i) => (
                 <BlockRenderer key={i} block={block} />
               ))}
             </div>
@@ -323,6 +407,7 @@ interface ConversationProps {
     attachments: Attachment[],
     model: string,
     effort: string | null,
+    planMode: boolean,
   ) => void
   pendingPermission: PermissionRequest | null
   onPermissionResponse: (
@@ -331,6 +416,18 @@ interface ConversationProps {
     remember: boolean,
     toolName: string,
   ) => void
+  planMode: boolean
+  planContent: string | null
+  planReadOnly: boolean
+  savedPlans: SavedPlan[]
+  onTogglePlanMode: (enabled: boolean) => void
+  onBuildPlan: (content: string) => void
+  onSavePlan: (content: string) => void
+  onDiscardPlan: () => void
+  onClosePlanSheet: () => void
+  onEditSavedPlan: () => void
+  onLoadSavedPlan: (planId: string) => void
+  onNewPlan: () => void
 }
 
 export function Conversation({
@@ -343,6 +440,18 @@ export function Conversation({
   onSendMessage,
   pendingPermission,
   onPermissionResponse,
+  planMode,
+  planContent,
+  planReadOnly,
+  savedPlans,
+  onTogglePlanMode,
+  onBuildPlan,
+  onSavePlan,
+  onDiscardPlan,
+  onClosePlanSheet,
+  onEditSavedPlan,
+  onLoadSavedPlan,
+  onNewPlan,
 }: ConversationProps): React.JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
@@ -504,15 +613,19 @@ export function Conversation({
   function handleSend(): void {
     const text = inputValue.trim()
     if ((!text && attachments.length === 0) || sending) return
+
+    // Handle /plan as a local toggle
+    if (text.toLowerCase() === '/plan' && attachments.length === 0) {
+      setInputValue('')
+      onTogglePlanMode(!planMode)
+      return
+    }
+
     setSending(true)
     setInputValue('')
     const toSend = [...attachments]
     setAttachments([])
-    // Show message + attachments immediately (optimistic UI)
     setPendingUserMessage({ text, attachments: toSend })
-    // Stash lightweight metadata so the chip persists after the JSONL turn arrives
-    // (Claude Code does not write image data to the JSONL).
-    // turns.length is the 0-based index the new turn will occupy.
     if (toSend.length > 0) {
       const idx = turns.length
       const saved: UserAttachment[] = toSend.map((att) => ({
@@ -523,11 +636,10 @@ export function Conversation({
       }))
       setSentAttachments((prev) => new Map(prev).set(idx, saved))
     }
-    // Revoke object URLs after capturing for pending display (data URIs used for rendering)
     toSend.forEach((a) => {
       if (a.previewUrl) URL.revokeObjectURL(a.previewUrl)
     })
-    onSendMessage(text, toSend, model, effort)
+    onSendMessage(text, toSend, model, effort, planMode)
     setTimeout(() => setSending(false), 500)
   }
 
@@ -551,10 +663,29 @@ export function Conversation({
                 (acc.cacheCreationTokens ?? 0) + (t.tokenUsage.cacheCreationTokens ?? 0),
             }
           }, null)}
+          savedPlans={savedPlans}
+          onLoadSavedPlan={onLoadSavedPlan}
+          onNewPlan={onNewPlan}
         />
       )}
 
-      <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 flex-1 overflow-y-auto">
+      {planContent && (
+        <PlanSheet
+          content={planContent}
+          readOnly={planReadOnly}
+          onBuild={() => onBuildPlan(planContent)}
+          onSave={() => onSavePlan(planContent)}
+          onDiscard={onDiscardPlan}
+          onClose={onClosePlanSheet}
+          onEdit={onEditSavedPlan}
+        />
+      )}
+
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className="relative min-h-0 flex-1 overflow-y-auto"
+      >
         <div
           className="relative mx-auto max-w-5xl"
           style={{ height: `${virtualizer.getTotalSize()}px` }}
@@ -574,7 +705,7 @@ export function Conversation({
                 className="absolute left-0 top-0 w-full"
                 style={{ transform: `translateY(${virtualItem.start}px)` }}
               >
-                <TurnView turn={merged} />
+                <TurnView turn={merged} planMode={planMode} />
               </div>
             )
           })}
@@ -745,6 +876,8 @@ export function Conversation({
                 <span>{MODELS.find((m) => m.id === model)?.label ?? model}</span>
                 {effort && <span className="text-muted-foreground/25">·</span>}
                 {effort && <span>{effort}</span>}
+                {planMode && <span className="text-muted-foreground/25">·</span>}
+                {planMode && <span>Plan</span>}
                 <ChevronDown className="size-2.5" />
               </button>
 
@@ -801,6 +934,36 @@ export function Conversation({
                         <span className="size-2.5 shrink-0" />
                       )}
                       {e.label}
+                    </button>
+                  ))}
+
+                  <div className="my-1 border-t border-border/30" />
+                  <div className="mb-1 px-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/40">
+                    Mode
+                  </div>
+                  {(
+                    [
+                      { id: false, label: 'Agent' },
+                      { id: true, label: 'Plan' },
+                    ] as const
+                  ).map((m) => (
+                    <button
+                      key={String(m.id)}
+                      onClick={() => {
+                        onTogglePlanMode(m.id)
+                        setSelectorOpen(false)
+                      }}
+                      className={cn(
+                        'flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[11px] transition-colors hover:bg-accent',
+                        planMode === m.id ? 'text-foreground' : 'text-muted-foreground',
+                      )}
+                    >
+                      {planMode === m.id ? (
+                        <Check className="size-2.5 shrink-0" />
+                      ) : (
+                        <span className="size-2.5 shrink-0" />
+                      )}
+                      {m.label}
                     </button>
                   ))}
                 </div>

@@ -26,6 +26,8 @@ import type {
   SubAgentBlock,
   CompactionBlock,
   SystemMessageBlock,
+  UserQuestionBlock,
+  UserQuestionItem,
   ToolCall,
 } from '../../lib/types'
 import { Markdown } from './Markdown'
@@ -201,74 +203,49 @@ export function ThinkingBlockView({ block }: { block: ThinkingBlock }): React.JS
 
 // ── AskUserQuestion renderer ─────────────────────────────────────────
 
-interface QuestionOption {
-  label: string
-  description: string
+interface SingleQuestionProps {
+  q: UserQuestionItem
+  selected: Set<string>
+  showOther: boolean
+  otherText: string
+  onSelect: (label: string) => void
+  onShowOther: (show: boolean) => void
+  onOtherChange: (text: string) => void
+  onOtherSubmit: () => void
+  /** When true the parent handles submission; when false clicking a single-select option submits directly */
+  deferSubmit: boolean
 }
 
-function AskUserQuestionView({ toolCall }: { toolCall: ToolCall }): React.JSX.Element {
-  const question = String(toolCall.input.question ?? '')
-  const options = (toolCall.input.options ?? []) as QuestionOption[]
-  const multiSelect = Boolean(toolCall.input.multiSelect)
-
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [showOther, setShowOther] = useState(options.length === 0)
-  const [otherText, setOtherText] = useState('')
-  const [answered, setAnswered] = useState(false)
+function SingleQuestion({
+  q,
+  selected,
+  showOther,
+  otherText,
+  onSelect,
+  onShowOther,
+  onOtherChange,
+  onOtherSubmit,
+  deferSubmit,
+}: SingleQuestionProps): React.JSX.Element {
   const otherInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (showOther) otherInputRef.current?.focus()
   }, [showOther])
 
-  function submit(answer: string): void {
-    if (!answer.trim() || answered) return
-    setAnswered(true)
-    vscodeApi.postMessage({
-      command: 'answerQuestion',
-      toolUseId: toolCall.id,
-      answer: answer.trim(),
-    })
-  }
-
-  function handleOptionClick(label: string): void {
-    if (multiSelect) {
-      setSelected((prev) => {
-        const next = new Set(prev)
-        if (next.has(label)) {
-          next.delete(label)
-        } else {
-          next.add(label)
-        }
-        return next
-      })
-    } else {
-      submit(label)
-    }
-  }
-
-  if (answered) {
-    return (
-      <div className="rounded-md border border-blue-500/20 bg-blue-500/[0.04] px-3 py-2.5 text-[12px]">
-        <p className="font-medium text-foreground/80">{question}</p>
-        <p className="mt-1 italic text-muted-foreground/60">Answered — waiting for Claude…</p>
-      </div>
-    )
-  }
-
   return (
-    <div className="space-y-2.5 rounded-md border border-blue-500/30 bg-blue-500/[0.05] px-3 py-2.5 text-[12px]">
-      <p className="font-medium text-foreground/80">{question}</p>
+    <div className="space-y-1.5">
+      <p className="font-medium text-foreground/90">{q.question}</p>
 
-      {options.length > 0 && !showOther && (
+      {!showOther && (
         <div className="space-y-1.5">
-          {options.map((opt) => (
+          {q.options.map((opt) => (
             <button
               key={opt.label}
-              onClick={() => handleOptionClick(opt.label)}
+              onClick={() => onSelect(opt.label)}
               className={cn(
-                'w-full rounded border px-2.5 py-1.5 text-left transition-colors',
-                multiSelect && selected.has(opt.label)
+                'w-full rounded border px-2.5 py-1.5 text-left text-[12px] transition-colors',
+                q.multiSelect && selected.has(opt.label)
                   ? 'border-blue-500/40 bg-blue-500/10 text-foreground'
                   : 'border-border/30 text-foreground/80 hover:bg-muted/20',
               )}
@@ -280,20 +257,17 @@ function AskUserQuestionView({ toolCall }: { toolCall: ToolCall }): React.JSX.El
             </button>
           ))}
           <button
-            onClick={() => {
-              setShowOther(true)
-              setSelected(new Set())
-            }}
-            className="w-full rounded border border-border/20 px-2.5 py-1.5 text-left text-muted-foreground/60 transition-colors hover:bg-muted/20"
+            onClick={() => onShowOther(true)}
+            className="w-full rounded border border-border/20 px-2.5 py-1.5 text-left text-[12px] text-muted-foreground/60 transition-colors hover:bg-muted/20"
           >
             Other…
           </button>
         </div>
       )}
 
-      {multiSelect && !showOther && selected.size > 0 && (
+      {q.multiSelect && !showOther && selected.size > 0 && !deferSubmit && (
         <button
-          onClick={() => submit([...selected].join(', '))}
+          onClick={() => onOtherSubmit()}
           className="rounded bg-foreground/10 px-2.5 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-foreground/20"
         >
           Send
@@ -302,9 +276,9 @@ function AskUserQuestionView({ toolCall }: { toolCall: ToolCall }): React.JSX.El
 
       {showOther && (
         <div className="flex items-center gap-2">
-          {options.length > 0 && (
+          {q.options.length > 0 && (
             <button
-              onClick={() => setShowOther(false)}
+              onClick={() => onShowOther(false)}
               className="shrink-0 text-[11px] text-muted-foreground/50 hover:text-muted-foreground"
             >
               ← Back
@@ -314,33 +288,151 @@ function AskUserQuestionView({ toolCall }: { toolCall: ToolCall }): React.JSX.El
             ref={otherInputRef}
             type="text"
             value={otherText}
-            onChange={(e) => setOtherText(e.target.value)}
+            onChange={(e) => onOtherChange(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 e.preventDefault()
-                submit(otherText)
+                onOtherSubmit()
               }
             }}
             className="min-w-0 flex-1 rounded border border-input bg-background/60 px-2 py-1 text-[12px] text-foreground outline-none placeholder:text-muted-foreground/50"
             placeholder="Your answer…"
           />
-          <button
-            onClick={() => submit(otherText)}
-            disabled={!otherText.trim()}
-            className="rounded bg-foreground/10 px-2.5 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-foreground/20 disabled:opacity-40"
-          >
-            Send
-          </button>
+          {deferSubmit ? null : (
+            <button
+              onClick={onOtherSubmit}
+              disabled={!otherText.trim()}
+              className="rounded bg-foreground/10 px-2.5 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-foreground/20 disabled:opacity-40"
+            >
+              Send
+            </button>
+          )}
         </div>
       )}
     </div>
   )
 }
 
-export function ToolCallView({ block }: { block: ToolCallBlock }): React.JSX.Element {
-  if (block.toolCall.name === 'AskUserQuestion' && block.toolCall.status === 'running') {
-    return <AskUserQuestionView toolCall={block.toolCall} />
+export function UserQuestionView({
+  block,
+}: {
+  block: UserQuestionBlock
+}): React.JSX.Element | null {
+  const { questions, toolCallId } = block
+  const [answered, setAnswered] = useState(block.status === 'answered')
+  const [selections, setSelections] = useState<Set<string>[]>(() =>
+    questions.map(() => new Set<string>()),
+  )
+  const [showOthers, setShowOthers] = useState<boolean[]>(() => questions.map(() => false))
+  const [otherTexts, setOtherTexts] = useState<string[]>(() => questions.map(() => ''))
+
+  if (answered) return null
+
+  const isSingleSingleSelect = questions.length === 1 && !questions[0].multiSelect
+
+  function getAnswerFor(qi: number): string | null {
+    if (showOthers[qi]) return otherTexts[qi].trim() || null
+    const sel = selections[qi]
+    return sel.size > 0 ? [...sel].join(', ') : null
   }
+
+  function allAnswered(): boolean {
+    return questions.every((_, i) => getAnswerFor(i) !== null)
+  }
+
+  function submitAll(overrideQi?: number, overrideAnswer?: string): void {
+    const answers: Record<string, string> = {}
+    for (let i = 0; i < questions.length; i++) {
+      const ans = i === overrideQi ? overrideAnswer : getAnswerFor(i)
+      if (ans) answers[questions[i].question] = ans
+    }
+    const content =
+      questions.length === 1 ? (Object.values(answers)[0] ?? '') : JSON.stringify(answers)
+    setAnswered(true)
+    vscodeApi.postMessage({ command: 'answerQuestion', toolUseId: toolCallId, answer: content })
+  }
+
+  function handleSelect(qi: number, label: string): void {
+    if (questions[qi].multiSelect) {
+      setSelections((prev) => {
+        const next = [...prev]
+        const sel = new Set(next[qi])
+        if (sel.has(label)) sel.delete(label)
+        else sel.add(label)
+        next[qi] = sel
+        return next
+      })
+    } else {
+      if (isSingleSingleSelect) {
+        submitAll(qi, label)
+      } else {
+        setSelections((prev) => {
+          const next = [...prev]
+          next[qi] = new Set([label])
+          return next
+        })
+      }
+    }
+  }
+
+  function handleOtherSubmit(qi: number): void {
+    const text = otherTexts[qi].trim()
+    if (!text) return
+    if (isSingleSingleSelect) {
+      submitAll(qi, text)
+    }
+  }
+
+  return (
+    <div className="space-y-3 pl-1 text-[12px]">
+      {questions.map((q, qi) => (
+        <SingleQuestion
+          key={qi}
+          q={q}
+          selected={selections[qi]}
+          showOther={showOthers[qi]}
+          otherText={otherTexts[qi]}
+          onSelect={(label) => handleSelect(qi, label)}
+          onShowOther={(show) => {
+            setShowOthers((prev) => {
+              const next = [...prev]
+              next[qi] = show
+              return next
+            })
+            if (show) {
+              setSelections((prev) => {
+                const next = [...prev]
+                next[qi] = new Set()
+                return next
+              })
+            }
+          }}
+          onOtherChange={(text) => {
+            setOtherTexts((prev) => {
+              const next = [...prev]
+              next[qi] = text
+              return next
+            })
+          }}
+          onOtherSubmit={() => handleOtherSubmit(qi)}
+          deferSubmit={!isSingleSingleSelect}
+        />
+      ))}
+
+      {!isSingleSingleSelect && (
+        <button
+          onClick={() => submitAll()}
+          disabled={!allAnswered()}
+          className="rounded bg-foreground/10 px-2.5 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-foreground/20 disabled:opacity-40"
+        >
+          Submit
+        </button>
+      )}
+    </div>
+  )
+}
+
+export function ToolCallView({ block }: { block: ToolCallBlock }): React.JSX.Element {
   return <ToolCallItemView toolCall={block.toolCall} />
 }
 
@@ -482,6 +574,8 @@ export function BlockRenderer({ block }: { block: ContentBlock }): React.JSX.Ele
       return <CompactionView block={block} />
     case 'system_message':
       return <SystemMessageView block={block} />
+    case 'user_question':
+      return <UserQuestionView block={block} />
     default:
       return null
   }

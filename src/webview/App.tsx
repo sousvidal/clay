@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Conversation } from './components/chat/Conversation'
 import type {
   Turn,
@@ -8,12 +8,30 @@ import type {
   WorkspaceFile,
   PermissionRequest,
   ContentBlock,
+  SavedPlan,
 } from './lib/types'
 import { vscodeApi } from './lib/vscode'
 
 interface SessionPayload extends SessionMeta {
   turns: Turn[]
   isActive: boolean
+}
+
+const PLAN_TAG_RE = /<plan>([\s\S]*?)<\/plan>/
+
+function extractPlanFromTurns(turns: Turn[]): string | null {
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i]
+    const textBlocks = turn.contentBlocks.filter(
+      (b): b is { kind: 'text'; text: string } => b.kind === 'text',
+    )
+    if (textBlocks.length === 0) continue
+    const combined = textBlocks.map((b) => b.text).join('\n\n')
+    const match = PLAN_TAG_RE.exec(combined)
+    if (match) return match[1].trim()
+    if (combined.trim()) return combined
+  }
+  return null
 }
 
 export function App(): React.JSX.Element {
@@ -25,6 +43,12 @@ export function App(): React.JSX.Element {
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([])
   const [isProcessing, setIsProcessing] = useState(false)
 
+  // Plan mode state (owned here because IPC messages arrive at App level)
+  const [planMode, setPlanMode] = useState(false)
+  const [planContent, setPlanContent] = useState<string | null>(null)
+  const [planReadOnly, setPlanReadOnly] = useState(false)
+  const [savedPlans, setSavedPlans] = useState<SavedPlan[]>([])
+
   useEffect(() => {
     const handler = (
       event: MessageEvent<{
@@ -34,6 +58,9 @@ export function App(): React.JSX.Element {
         files?: WorkspaceFile[]
         request?: PermissionRequest
         block?: ContentBlock
+        content?: string
+        readOnly?: boolean
+        plans?: SavedPlan[]
       }>,
     ): void => {
       const msg = event.data
@@ -66,24 +93,55 @@ export function App(): React.JSX.Element {
       if (msg.command === 'permissionRequest' && msg.request) {
         setPendingPermissions((prev) => [...prev, msg.request!])
       }
+      if (msg.command === 'loadPlan' && msg.content) {
+        setPlanContent(msg.content)
+        setPlanMode(true)
+        setPlanReadOnly(msg.readOnly ?? false)
+      }
+      if (msg.command === 'loadPlansList' && msg.plans) {
+        setSavedPlans(msg.plans)
+      }
+      if (msg.command === 'planCommitted' && msg.plans) {
+        setSavedPlans(msg.plans)
+      }
     }
 
     window.addEventListener('message', handler)
-
-    // Tell extension we're ready
     vscodeApi.postMessage({ command: 'ready' })
-
     return () => window.removeEventListener('message', handler)
   }, [])
+
+  // Derive plan content from turns when in active (non-read-only) plan mode
+  const extractedPlan = useMemo(() => {
+    if (!planMode || planReadOnly) return null
+    return extractPlanFromTurns(turns)
+  }, [turns, planMode, planReadOnly])
+
+  const activePlanContent = planReadOnly ? planContent : (extractedPlan ?? planContent)
+
+  // Auto-persist plan content to disk
+  useEffect(() => {
+    if (activePlanContent && planMode && !planReadOnly) {
+      vscodeApi.postMessage({ command: 'persistPlan', content: activePlanContent })
+    }
+  }, [activePlanContent, planMode, planReadOnly])
 
   function handleSendMessage(
     text: string,
     attachments: Attachment[],
     model: string,
     effort: string | null,
+    planModeFlag: boolean,
   ): void {
     setIsProcessing(true)
-    vscodeApi.postMessage({ command: 'sendMessage', text, attachments, model, effort })
+    vscodeApi.postMessage({
+      command: 'sendMessage',
+      text,
+      attachments,
+      model,
+      effort,
+      planMode: planModeFlag,
+    })
   }
 
   function handlePermissionResponse(
@@ -95,6 +153,52 @@ export function App(): React.JSX.Element {
     setPendingPermissions((prev) => prev.filter((r) => r.requestId !== requestId))
     vscodeApi.postMessage({ command: 'permissionResponse', requestId, allow, remember, toolName })
   }
+
+  const handleTogglePlanMode = useCallback((enabled: boolean) => {
+    setPlanMode(enabled)
+    if (!enabled) {
+      setPlanContent(null)
+      setPlanReadOnly(false)
+    }
+    vscodeApi.postMessage({ command: 'togglePlanMode', enabled })
+  }, [])
+
+  const handleBuildPlan = useCallback((content: string) => {
+    vscodeApi.postMessage({ command: 'buildPlan', content })
+  }, [])
+
+  const handleSavePlan = useCallback((content: string) => {
+    vscodeApi.postMessage({ command: 'commitPlan', content })
+  }, [])
+
+  const handleDiscardPlan = useCallback(() => {
+    setPlanMode(false)
+    setPlanContent(null)
+    setPlanReadOnly(false)
+    vscodeApi.postMessage({ command: 'discardPlan' })
+  }, [])
+
+  const handleClosePlanSheet = useCallback(() => {
+    setPlanContent(null)
+    setPlanReadOnly(false)
+  }, [])
+
+  const handleEditSavedPlan = useCallback(() => {
+    setPlanReadOnly(false)
+    setPlanMode(true)
+    vscodeApi.postMessage({ command: 'togglePlanMode', enabled: true })
+  }, [])
+
+  const handleLoadSavedPlan = useCallback((planId: string) => {
+    vscodeApi.postMessage({ command: 'loadSavedPlan', planId })
+  }, [])
+
+  const handleNewPlan = useCallback(() => {
+    setPlanContent(null)
+    setPlanReadOnly(false)
+    setPlanMode(true)
+    vscodeApi.postMessage({ command: 'togglePlanMode', enabled: true })
+  }, [])
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
@@ -109,6 +213,18 @@ export function App(): React.JSX.Element {
           workspaceFiles={workspaceFiles}
           pendingPermission={pendingPermissions[0] ?? null}
           onPermissionResponse={handlePermissionResponse}
+          planMode={planMode}
+          planContent={activePlanContent}
+          planReadOnly={planReadOnly}
+          savedPlans={savedPlans}
+          onTogglePlanMode={handleTogglePlanMode}
+          onBuildPlan={handleBuildPlan}
+          onSavePlan={handleSavePlan}
+          onDiscardPlan={handleDiscardPlan}
+          onClosePlanSheet={handleClosePlanSheet}
+          onEditSavedPlan={handleEditSavedPlan}
+          onLoadSavedPlan={handleLoadSavedPlan}
+          onNewPlan={handleNewPlan}
         />
       ) : (
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">

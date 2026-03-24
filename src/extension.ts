@@ -1,7 +1,6 @@
 import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
-import * as os from 'os'
 import * as http from 'http'
 import { spawn, execSync, type ChildProcess } from 'child_process'
 import * as crypto from 'crypto'
@@ -26,6 +25,28 @@ const pendingPermissions = new Map<string, PendingPermission>()
 let permissionServer: http.Server | null = null
 let permissionPort = 0
 
+function hookAllow(res: http.ServerResponse): void {
+  res.writeHead(200, { 'Content-Type': 'application/json' })
+  res.end(
+    JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
+    }),
+  )
+}
+
+function hookDeny(res: http.ServerResponse, reason = 'User denied'): void {
+  res.writeHead(200, { 'Content-Type': 'application/json' })
+  res.end(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: reason,
+      },
+    }),
+  )
+}
+
 function startPermissionServer(): void {
   permissionServer = http.createServer((req, res) => {
     if (req.method !== 'POST' || req.url !== '/permission') {
@@ -40,11 +61,24 @@ function startPermissionServer(): void {
     })
     req.on('end', () => {
       try {
-        const payload = JSON.parse(body) as {
-          requestId: string
-          sessionId: string
-          toolName: string
-          toolInput: Record<string, unknown>
+        const hookBody = JSON.parse(body) as {
+          tool_name: string
+          tool_use_id: string
+          session_id: string
+          tool_input?: Record<string, unknown>
+        }
+        const payload = {
+          requestId: hookBody.tool_use_id || `${Date.now()}`,
+          sessionId: hookBody.session_id,
+          toolName: hookBody.tool_name,
+          toolInput: hookBody.tool_input ?? {},
+        }
+
+        // AskUserQuestion is never a real tool — it's Claude asking the user
+        // a question. Always allow it so the question renders in the chat.
+        if (payload.toolName === 'AskUserQuestion') {
+          hookAllow(res)
+          return
         }
 
         // Check stored preferences first
@@ -61,34 +95,30 @@ function startPermissionServer(): void {
         }
 
         if (saved === 'always_allow') {
-          res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ allow: true }))
+          hookAllow(res)
           return
         }
         if (saved === 'always_deny') {
-          res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ allow: false }))
+          hookDeny(res)
           return
         }
 
         // Route to the correct panel
         const panel = openPanels.get(payload.sessionId)
         if (!panel) {
-          res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ allow: false }))
+          hookDeny(res, 'No active panel')
           return
         }
 
-        // Hold the response open until the user decides (max 5 min)
+        // Hold the response open until the user decides (max 1 hour)
         const timer = setTimeout(() => {
           pendingPermissions.delete(payload.requestId)
           try {
-            res.writeHead(200, { 'Content-Type': 'application/json' })
-            res.end(JSON.stringify({ allow: false }))
+            hookDeny(res, 'Timed out')
           } catch {
             // socket may already be gone
           }
-        }, 300_000)
+        }, 3_600_000)
 
         pendingPermissions.set(payload.requestId, { res, timer })
 
@@ -295,33 +325,84 @@ function watchJsonl(jsonlPath: string, onChange: () => void): () => void {
   }
 }
 
+const PLAN_SYSTEM_PROMPT =
+  'Always wrap your plan in <plan></plan> tags. Format the plan as clear markdown with a descriptive title, numbered steps, and file paths. When updating the plan, always output the complete updated plan in <plan> tags.'
+
+function getPlanActivePath(workspacePath: string, sessionId: string): string {
+  return path.join(
+    getClaudeProjectsDir(),
+    encodeProjectPath(workspacePath),
+    `plan-${sessionId}-active.md`,
+  )
+}
+
+function getPlansIndexPath(workspacePath: string, sessionId: string): string {
+  return path.join(
+    getClaudeProjectsDir(),
+    encodeProjectPath(workspacePath),
+    `plans-${sessionId}.json`,
+  )
+}
+
+interface SavedPlanEntry {
+  id: string
+  title: string
+  content: string
+  createdAt: string
+}
+
+function readPlansIndex(indexPath: string): SavedPlanEntry[] {
+  try {
+    if (!fs.existsSync(indexPath)) return []
+    return JSON.parse(fs.readFileSync(indexPath, 'utf8')) as SavedPlanEntry[]
+  } catch {
+    return []
+  }
+}
+
+function writePlansIndex(indexPath: string, plans: SavedPlanEntry[]): void {
+  fs.writeFileSync(indexPath, JSON.stringify(plans, null, 2))
+}
+
+function extractPlanTitle(content: string): string {
+  const headingMatch = /^#+\s+(.+)$/m.exec(content)
+  if (headingMatch) return headingMatch[1].trim()
+  const firstLine = content.split('\n').find((l) => l.trim().length > 0)
+  if (firstLine) return firstLine.trim().slice(0, 60)
+  return 'Untitled plan'
+}
+
 function spawnClaudeProcess(
   mode: 'new' | 'resume',
   sessionId: string,
   cwd: string,
   model?: string,
   effort?: string | null,
+  planMode?: boolean,
 ): ChildProcess {
   const modeArgs = mode === 'new' ? ['--session-id', sessionId] : ['--resume', sessionId]
   const modelArgs = model ? ['--model', model] : []
   const effortArgs = effort ? ['--effort', effort] : []
+  const planArgs = planMode
+    ? ['--permission-mode', 'plan', '--append-system-prompt', PLAN_SYSTEM_PROMPT]
+    : []
 
-  // Write a per-session MCP config that routes permission prompts through our
-  // local HTTP server. __dirname resolves to dist/ in the esbuild bundle.
-  const mcpConfigPath = path.join(os.tmpdir(), `clay-mcp-${sessionId}.json`)
-  const mcpConfig = {
-    mcpServers: {
-      permissions: {
-        command: 'node',
-        args: [path.join(__dirname, 'permission-server.js')],
-        env: {
-          PERMISSION_PORT: String(permissionPort),
-          SESSION_ID: sessionId,
+  const hookSettings = JSON.stringify({
+    hooks: {
+      PreToolUse: [
+        {
+          matcher: '.*',
+          hooks: [
+            {
+              type: 'http',
+              url: `http://127.0.0.1:${permissionPort}/permission`,
+              timeout: 3600,
+            },
+          ],
         },
-      },
+      ],
     },
-  }
-  fs.writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig))
+  })
 
   const proc = spawn(
     'claude',
@@ -332,13 +413,12 @@ function spawnClaudeProcess(
       '--output-format',
       'stream-json',
       '--verbose',
-      '--permission-prompt-tool',
-      'mcp__permissions__prompt_for_permission',
-      '--mcp-config',
-      mcpConfigPath,
+      '--settings',
+      hookSettings,
       ...modeArgs,
       ...modelArgs,
       ...effortArgs,
+      ...planArgs,
     ],
     { cwd, stdio: ['pipe', 'pipe', 'pipe'] },
   )
@@ -365,11 +445,6 @@ function spawnClaudeProcess(
   proc.on('exit', () => {
     activeProcesses.delete(sessionId)
     processReadyPromises.delete(sessionId)
-    try {
-      fs.unlinkSync(mcpConfigPath)
-    } catch {
-      // ignore — file may already be gone
-    }
   })
 
   return proc
@@ -517,6 +592,7 @@ function wirePanelMessages(
       attachments?: AttachmentPayload[]
       model?: string
       effort?: string | null
+      planMode?: boolean
       filePath?: string
       line?: number
       requestId?: string
@@ -525,6 +601,9 @@ function wirePanelMessages(
       toolName?: string
       toolUseId?: string
       answer?: string
+      content?: string
+      enabled?: boolean
+      planId?: string
     }) => {
       if (msg.command === 'permissionResponse') {
         const { requestId, allow, remember, toolName } = msg
@@ -535,8 +614,11 @@ function wirePanelMessages(
           clearTimeout(pending.timer)
           pendingPermissions.delete(requestId)
           try {
-            pending.res.writeHead(200, { 'Content-Type': 'application/json' })
-            pending.res.end(JSON.stringify({ allow: allow ?? false }))
+            if (allow) {
+              hookAllow(pending.res)
+            } else {
+              hookDeny(pending.res)
+            }
           } catch {
             // socket may already be gone
           }
@@ -582,6 +664,26 @@ function wirePanelMessages(
         listWorkspaceFiles(workspacePath).then((files) => {
           panel.webview.postMessage({ command: 'workspaceFiles', files })
         })
+
+        // Restore active plan if one exists
+        const planPath = getPlanActivePath(workspacePath, session.id)
+        try {
+          if (fs.existsSync(planPath)) {
+            const content = fs.readFileSync(planPath, 'utf8')
+            if (content.trim()) {
+              panel.webview.postMessage({ command: 'loadPlan', content })
+            }
+          }
+        } catch {
+          // ignore
+        }
+
+        // Send saved plans list
+        const indexPath = getPlansIndexPath(workspacePath, session.id)
+        const plans = readPlansIndex(indexPath)
+        if (plans.length > 0) {
+          panel.webview.postMessage({ command: 'loadPlansList', plans })
+        }
         return
       }
 
@@ -644,6 +746,92 @@ function wirePanelMessages(
         return
       }
 
+      // ── Plan mode IPC handlers ──────────────────────────────────────
+      if (msg.command === 'togglePlanMode') {
+        const proc = activeProcesses.get(session.id)
+        if (proc && proc.exitCode === null) {
+          killProcess(session.id)
+          session.spawnMode = 'resume'
+        }
+        return
+      }
+
+      if (msg.command === 'persistPlan') {
+        if (!msg.content) return
+        const planPath = getPlanActivePath(workspacePath, session.id)
+        try {
+          fs.writeFileSync(planPath, msg.content)
+        } catch {
+          // silently ignore write errors
+        }
+        return
+      }
+
+      if (msg.command === 'commitPlan') {
+        if (!msg.content) return
+        const indexPath = getPlansIndexPath(workspacePath, session.id)
+        const plans = readPlansIndex(indexPath)
+        const entry: SavedPlanEntry = {
+          id: crypto.randomUUID(),
+          title: extractPlanTitle(msg.content),
+          content: msg.content,
+          createdAt: new Date().toISOString(),
+        }
+        plans.push(entry)
+        writePlansIndex(indexPath, plans)
+        panel.webview.postMessage({ command: 'planCommitted', plans })
+        return
+      }
+
+      if (msg.command === 'buildPlan') {
+        if (!msg.content) return
+        // Commit the plan first
+        const indexPath = getPlansIndexPath(workspacePath, session.id)
+        const plans = readPlansIndex(indexPath)
+        plans.push({
+          id: crypto.randomUUID(),
+          title: extractPlanTitle(msg.content),
+          content: msg.content,
+          createdAt: new Date().toISOString(),
+        })
+        writePlansIndex(indexPath, plans)
+        panel.webview.postMessage({ command: 'planCommitted', plans })
+
+        // Trigger a new session via the command (handled elsewhere in activate())
+        void vscode.commands.executeCommand('clay.newSessionWithMessage', msg.content)
+        return
+      }
+
+      if (msg.command === 'discardPlan') {
+        const discardProc = activeProcesses.get(session.id)
+        if (discardProc && discardProc.exitCode === null) {
+          killProcess(session.id)
+          session.spawnMode = 'resume'
+        }
+        const planPath = getPlanActivePath(workspacePath, session.id)
+        try {
+          if (fs.existsSync(planPath)) fs.unlinkSync(planPath)
+        } catch {
+          // ignore
+        }
+        return
+      }
+
+      if (msg.command === 'loadSavedPlan') {
+        if (!msg.planId) return
+        const indexPath = getPlansIndexPath(workspacePath, session.id)
+        const plans = readPlansIndex(indexPath)
+        const plan = plans.find((p) => p.id === msg.planId)
+        if (plan) {
+          panel.webview.postMessage({
+            command: 'loadPlan',
+            content: plan.content,
+            readOnly: true,
+          })
+        }
+        return
+      }
+
       if (msg.command === 'sendMessage') {
         let text = (msg.text ?? '').trim()
         const attachments = msg.attachments ?? []
@@ -672,6 +860,7 @@ function wirePanelMessages(
                 workspacePath,
                 msg.model,
                 msg.effort ?? undefined,
+                msg.planMode,
               )
               session.spawnMode = 'resume'
 
@@ -727,6 +916,7 @@ function wirePanelMessages(
             workspacePath,
             msg.model,
             msg.effort ?? undefined,
+            msg.planMode,
           )
 
           if (!panelCleanups.has(session.id)) {
@@ -896,6 +1086,67 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   })
 
+  // ── clay.newSessionWithMessage ────────────────────────────────────
+  const newSessionWithMessage = vscode.commands.registerCommand(
+    'clay.newSessionWithMessage',
+    (message: string) => {
+      const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      if (!workspacePath) return
+
+      const buildSessionId = crypto.randomUUID()
+      const buildJsonlPath = getJsonlPath(workspacePath, buildSessionId)
+      fs.mkdirSync(path.dirname(buildJsonlPath), { recursive: true })
+
+      const buildPanel = createChatPanel(buildSessionId, 'Build from plan', context)
+      const emptySession: ParsedSession = {
+        sessionId: buildSessionId,
+        model: null,
+        gitBranch: null,
+        cwd: workspacePath,
+        version: null,
+        turns: [],
+      }
+      const buildState: SessionState = { id: buildSessionId, spawnMode: 'new' }
+
+      const buildMsgDisposable = wirePanelMessages(
+        buildPanel,
+        buildState,
+        workspacePath,
+        async () => emptySession,
+        panelCleanups,
+      )
+
+      sendSession(buildPanel, emptySession, true, 'loadSession')
+
+      const buildCleanup = setupSessionWatcher(buildJsonlPath, buildPanel, true, () => {
+        sessionsProvider.refresh()
+      })
+      panelCleanups.set(buildSessionId, buildCleanup)
+
+      buildPanel.onDidDispose(() => {
+        buildMsgDisposable.dispose()
+        cleanupPanel(buildState.id)
+      })
+
+      // Spawn and send the plan as the first message
+      const proc = spawnClaudeProcess('new', buildSessionId, workspacePath)
+      const readyPromise = processReadyPromises.get(buildSessionId)
+      if (readyPromise) {
+        readyPromise.then(() => {
+          processReadyPromises.delete(buildSessionId)
+          const payload = JSON.stringify({
+            type: 'user',
+            message: {
+              role: 'user',
+              content: [{ type: 'text', text: `Execute this plan:\n\n${message}` }],
+            },
+          })
+          proc.stdin?.write(payload + '\n')
+        })
+      }
+    },
+  )
+
   // ── clay.openChat (alias for newSession) ──────────────────────────
   const openChat = vscode.commands.registerCommand('clay.openChat', () => {
     vscode.commands.executeCommand('clay.newSession')
@@ -924,6 +1175,7 @@ export function activate(context: vscode.ExtensionContext): void {
     treeView,
     openSession,
     newSession,
+    newSessionWithMessage,
     openChat,
     refreshSessions,
     deleteSession,
@@ -931,12 +1183,10 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  // Deny all pending permission requests before closing
   for (const [, pending] of pendingPermissions) {
     clearTimeout(pending.timer)
     try {
-      pending.res.writeHead(200, { 'Content-Type': 'application/json' })
-      pending.res.end(JSON.stringify({ allow: false }))
+      hookDeny(pending.res, 'Extension deactivating')
     } catch {
       // socket may already be gone
     }

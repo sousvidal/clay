@@ -9,6 +9,8 @@ import type {
   UserAttachment,
   ParsedSession,
   TokenUsage,
+  UserQuestionBlock,
+  UserQuestionItem,
 } from './webview/lib/types'
 
 // ── Raw JSONL message types ─────────────────────────────────────────
@@ -119,15 +121,55 @@ function extractAssistantBlocks(msg: RawMessage): ContentBlock[] {
         }
         break
       case 'tool_use':
-        blocks.push({
-          kind: 'tool_call',
-          toolCall: {
-            id: block.id as string,
-            name: block.name as string,
-            input: (block.input as Record<string, unknown>) ?? {},
-            status: 'done',
-          },
-        })
+        if (block.name === 'AskUserQuestion') {
+          const input = (block.input as Record<string, unknown>) ?? {}
+          let questions: UserQuestionItem[]
+          if (Array.isArray(input.questions)) {
+            // New format: { questions: [{ question, header, options, multiSelect }] }
+            questions = (input.questions as Record<string, unknown>[]).map((q) => ({
+              question: String(q.question ?? ''),
+              header: String(q.header ?? ''),
+              options: Array.isArray(q.options)
+                ? (q.options as Record<string, unknown>[]).map((o) => ({
+                    label: String(o.label ?? ''),
+                    description: String(o.description ?? ''),
+                  }))
+                : [],
+              multiSelect: Boolean(q.multiSelect),
+            }))
+          } else {
+            // Old flat format: { question, options, multiSelect }
+            const rawOptions = Array.isArray(input.options) ? input.options : []
+            questions = [
+              {
+                question: String(input.question ?? ''),
+                header: '',
+                options: (rawOptions as Record<string, unknown>[]).map((o) => ({
+                  label: String(o.label ?? ''),
+                  description: String(o.description ?? ''),
+                })),
+                multiSelect: Boolean(input.multiSelect),
+              },
+            ]
+          }
+          const qBlock: UserQuestionBlock = {
+            kind: 'user_question',
+            toolCallId: block.id as string,
+            questions,
+            status: 'pending',
+          }
+          blocks.push(qBlock)
+        } else {
+          blocks.push({
+            kind: 'tool_call',
+            toolCall: {
+              id: block.id as string,
+              name: block.name as string,
+              input: (block.input as Record<string, unknown>) ?? {},
+              status: 'done',
+            },
+          })
+        }
         break
     }
   }
@@ -468,6 +510,7 @@ export async function parseSessionFile(jsonlPath: string): Promise<ParsedSession
   const turns: Turn[] = []
   let currentTurn: Turn | null = null
   const pendingToolCalls = new Map<string, ToolCall>()
+  const pendingQuestions = new Map<string, UserQuestionBlock>()
 
   // Agent/Task tracking
   const taskMetaMap = new Map<string, { name: string | null; subagentType: string | null }>()
@@ -647,6 +690,11 @@ export async function parseSessionFile(jsonlPath: string): Promise<ParsedSession
             pending.isError = result.isError
             pendingToolCalls.delete(toolId)
           }
+          const pendingQ = pendingQuestions.get(toolId)
+          if (pendingQ) {
+            pendingQ.status = 'answered'
+            pendingQuestions.delete(toolId)
+          }
         }
         continue
       }
@@ -697,6 +745,8 @@ export async function parseSessionFile(jsonlPath: string): Promise<ParsedSession
               backgroundIds.add(tc.id)
             }
           }
+        } else if (block.kind === 'user_question') {
+          pendingQuestions.set(block.toolCallId, block)
         }
       }
 
@@ -728,6 +778,12 @@ export async function parseSessionFile(jsonlPath: string): Promise<ParsedSession
   flushAllAgents()
   if (currentTurn) {
     turns.push(currentTurn)
+  }
+
+  // Mark any tool calls that never received a result as 'running' — they are
+  // still awaiting output (e.g. AskUserQuestion waiting for the user to reply).
+  for (const tc of pendingToolCalls.values()) {
+    tc.status = 'running'
   }
 
   const filteredTurns = turns.filter((t) => t.userMessage !== null || t.contentBlocks.length > 0)

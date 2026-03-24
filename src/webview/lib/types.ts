@@ -55,6 +55,20 @@ export interface SystemMessageBlock {
   level: 'info' | 'warning'
 }
 
+export interface UserQuestionItem {
+  question: string
+  header: string
+  options: Array<{ label: string; description: string }>
+  multiSelect: boolean
+}
+
+export interface UserQuestionBlock {
+  kind: 'user_question'
+  toolCallId: string
+  questions: UserQuestionItem[]
+  status: 'pending' | 'answered'
+}
+
 export type ContentBlock =
   | TextBlock
   | ThinkingBlock
@@ -62,6 +76,7 @@ export type ContentBlock =
   | SubAgentBlock
   | CompactionBlock
   | SystemMessageBlock
+  | UserQuestionBlock
 
 export interface TokenUsage {
   inputTokens: number
@@ -126,4 +141,11 @@ export interface PermissionRequest {
   sessionId: string
   toolName: string
   toolInput: Record<string, unknown>
+}
+
+export interface SavedPlan {
+  id: string
+  title: string
+  content: string
+  createdAt: string
 }
