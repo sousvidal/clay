@@ -23,6 +23,7 @@ export function App(): React.JSX.Element {
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([])
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([])
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([])
+  const [isProcessing, setIsProcessing] = useState(false)
 
   useEffect(() => {
     const handler = (
@@ -41,6 +42,7 @@ export function App(): React.JSX.Element {
         setTurns(newTurns)
         setMeta(newMeta)
         setIsActive(active)
+        setIsProcessing(false)
       }
       if (msg.command === 'systemMessage' && msg.block) {
         const syntheticTurn: Turn = {
@@ -80,6 +82,7 @@ export function App(): React.JSX.Element {
     model: string,
     effort: string | null,
   ): void {
+    setIsProcessing(true)
     vscodeApi.postMessage({ command: 'sendMessage', text, attachments, model, effort })
   }
 
@@ -100,6 +103,7 @@ export function App(): React.JSX.Element {
           turns={turns}
           meta={meta}
           isActive={isActive}
+          isProcessing={isProcessing}
           onSendMessage={handleSendMessage}
           slashCommands={slashCommands}
           workspaceFiles={workspaceFiles}

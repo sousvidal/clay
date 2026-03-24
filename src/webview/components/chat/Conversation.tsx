@@ -66,9 +66,8 @@ function formatRelativeTime(timestamp: string): string {
   return date.toLocaleDateString()
 }
 
-function formatTokenUsage(usage: TokenUsage): string {
-  const k = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
-  return `${k(usage.inputTokens)} → ${k(usage.outputTokens)}`
+function fmtTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 }
 
 function basename(p: string): string {
@@ -180,12 +179,26 @@ function readFileAsAttachment(file: File): Promise<Attachment> {
 interface SessionHeaderProps {
   meta: SessionMeta
   isActive: boolean
+  isProcessing: boolean
+  totalTokens: TokenUsage | null
 }
 
-function SessionHeader({ meta, isActive }: SessionHeaderProps): React.JSX.Element {
+function SessionHeader({
+  meta,
+  isActive,
+  isProcessing,
+  totalTokens,
+}: SessionHeaderProps): React.JSX.Element {
+  const cacheTotal = (totalTokens?.cacheReadTokens ?? 0) + (totalTokens?.cacheCreationTokens ?? 0)
+
   return (
     <div className="flex shrink-0 items-center gap-3 border-b border-border/30 px-4 py-2 text-[11px] text-muted-foreground/50">
-      {isActive && (
+      {isProcessing ? (
+        <span className="flex items-center gap-1.5 text-muted-foreground/70">
+          <Loader2 className="size-3 animate-spin" />
+          Thinking…
+        </span>
+      ) : isActive ? (
         <span className="flex items-center gap-1.5 text-green-500/70">
           <span className="relative flex size-1.5">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
@@ -193,7 +206,7 @@ function SessionHeader({ meta, isActive }: SessionHeaderProps): React.JSX.Elemen
           </span>
           Live
         </span>
-      )}
+      ) : null}
       {meta.gitBranch && (
         <span className="flex items-center gap-1">
           <GitBranch className="size-3" />
@@ -206,7 +219,13 @@ function SessionHeader({ meta, isActive }: SessionHeaderProps): React.JSX.Elemen
           {basename(meta.cwd)}
         </span>
       )}
-      {meta.model && <span className="ml-auto">{meta.model}</span>}
+      {totalTokens && (
+        <span className="ml-auto flex items-center gap-2">
+          <span>↑ {fmtTokens(totalTokens.inputTokens + cacheTotal)}</span>
+          <span>↓ {fmtTokens(totalTokens.outputTokens)}</span>
+        </span>
+      )}
+      {meta.model && <span className={totalTokens ? '' : 'ml-auto'}>{meta.model}</span>}
     </div>
   )
 }
@@ -275,7 +294,6 @@ function TurnView({ turn }: { turn: Turn }): React.JSX.Element {
             <div className="flex items-center gap-2 text-[10px] text-muted-foreground/40">
               {turn.model && <span>{turn.model}</span>}
               {turn.durationMs != null && <span>{(turn.durationMs / 1000).toFixed(1)}s</span>}
-              {turn.tokenUsage && <span>{formatTokenUsage(turn.tokenUsage)}</span>}
               {turn.timestamp && <span>{formatRelativeTime(turn.timestamp)}</span>}
             </div>
 
@@ -297,6 +315,7 @@ interface ConversationProps {
   turns: Turn[]
   meta: SessionMeta | null
   isActive: boolean
+  isProcessing: boolean
   slashCommands: SlashCommand[]
   workspaceFiles: WorkspaceFile[]
   onSendMessage: (
@@ -318,6 +337,7 @@ export function Conversation({
   turns,
   meta,
   isActive,
+  isProcessing,
   slashCommands,
   workspaceFiles,
   onSendMessage,
@@ -515,7 +535,24 @@ export function Conversation({
 
   return (
     <div className="flex h-full flex-col">
-      {meta && <SessionHeader meta={meta} isActive={isActive} />}
+      {meta && (
+        <SessionHeader
+          meta={meta}
+          isActive={isActive}
+          isProcessing={isProcessing}
+          totalTokens={turns.reduce<TokenUsage | null>((acc, t) => {
+            if (!t.tokenUsage) return acc
+            if (!acc) return { ...t.tokenUsage }
+            return {
+              inputTokens: acc.inputTokens + t.tokenUsage.inputTokens,
+              outputTokens: acc.outputTokens + t.tokenUsage.outputTokens,
+              cacheReadTokens: (acc.cacheReadTokens ?? 0) + (t.tokenUsage.cacheReadTokens ?? 0),
+              cacheCreationTokens:
+                (acc.cacheCreationTokens ?? 0) + (t.tokenUsage.cacheCreationTokens ?? 0),
+            }
+          }, null)}
+        />
+      )}
 
       <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 flex-1 overflow-y-auto">
         <div
