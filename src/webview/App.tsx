@@ -1,14 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Conversation } from './components/chat/Conversation'
 import type { Turn, SessionMeta, Attachment } from './lib/types'
-
-interface VsCodeApi {
-  postMessage(message: unknown): void
-}
-
-declare function acquireVsCodeApi(): VsCodeApi
-
-const vscode = acquireVsCodeApi()
+import { vscodeApi } from './lib/vscode'
 
 interface SessionPayload extends SessionMeta {
   turns: Turn[]
@@ -34,7 +27,7 @@ export function App(): React.JSX.Element {
     window.addEventListener('message', handler)
 
     // Tell extension we're ready
-    vscode.postMessage({ command: 'ready' })
+    vscodeApi.postMessage({ command: 'ready' })
 
     return () => window.removeEventListener('message', handler)
   }, [])
@@ -45,7 +38,7 @@ export function App(): React.JSX.Element {
     model: string,
     effort: string | null,
   ): void {
-    vscode.postMessage({ command: 'sendMessage', text, attachments, model, effort })
+    vscodeApi.postMessage({ command: 'sendMessage', text, attachments, model, effort })
   }
 
   return (
