@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { vscodeApi } from '../../lib/vscode'
 import {
   ChevronRight,
   FileText,
@@ -52,6 +53,18 @@ function getToolIcon(name: string): React.ReactNode {
   }
 }
 
+function getOpenablePath(toolCall: ToolCall): string | null {
+  const inp = toolCall.input
+  switch (toolCall.name) {
+    case 'Read':
+    case 'Write':
+    case 'Edit':
+      return (inp.file_path as string) ?? null
+    default:
+      return null
+  }
+}
+
 function getToolSummary(toolCall: ToolCall): string {
   const inp = toolCall.input
   switch (toolCall.name) {
@@ -80,6 +93,15 @@ export function ToolCallItemView({ toolCall }: { toolCall: ToolCall }): React.JS
   const [expanded, setExpanded] = useState(false)
   const isRunning = toolCall.status === 'running'
   const summary = getToolSummary(toolCall)
+  const openablePath = getOpenablePath(toolCall)
+  const lineNumber =
+    toolCall.name === 'Read' ? (toolCall.input.offset as number | undefined) : undefined
+
+  function handleOpenFile(e: React.MouseEvent): void {
+    e.stopPropagation()
+    if (!openablePath) return
+    vscodeApi.postMessage({ command: 'openFile', filePath: openablePath, line: lineNumber })
+  }
 
   return (
     <div
@@ -94,9 +116,17 @@ export function ToolCallItemView({ toolCall }: { toolCall: ToolCall }): React.JS
       <div className="flex items-center gap-2">
         <span className="text-muted-foreground">{getToolIcon(toolCall.name)}</span>
         <span className="font-mono font-medium text-foreground/80">{toolCall.name}</span>
-        {summary && (
-          <span className="min-w-0 truncate font-mono text-muted-foreground/60">{summary}</span>
-        )}
+        {summary &&
+          (openablePath ? (
+            <button
+              onClick={handleOpenFile}
+              className="min-w-0 truncate font-mono text-muted-foreground/60 hover:text-foreground/80 hover:underline"
+            >
+              {summary}
+            </button>
+          ) : (
+            <span className="min-w-0 truncate font-mono text-muted-foreground/60">{summary}</span>
+          ))}
         <span className="ml-auto shrink-0">
           {isRunning ? (
             <Loader2 className="size-3 animate-spin text-blue-400" />

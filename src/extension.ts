@@ -196,12 +196,33 @@ function wirePanelMessages(
       attachments?: AttachmentPayload[]
       model?: string
       effort?: string | null
+      filePath?: string
+      line?: number
     }) => {
       if (msg.command === 'ready') {
         const parsed = await getInitialSession()
         if (parsed) {
           const isActive = activeProcesses.has(sessionId)
           sendSession(panel, parsed, isActive, 'loadSession')
+        }
+        return
+      }
+
+      if (msg.command === 'openFile') {
+        const filePath = msg.filePath
+        if (!filePath) return
+        try {
+          const uri = vscode.Uri.file(filePath)
+          const doc = await vscode.workspace.openTextDocument(uri)
+          const sel =
+            msg.line !== undefined ? new vscode.Range(msg.line, 0, msg.line, 0) : undefined
+          await vscode.window.showTextDocument(doc, {
+            viewColumn: vscode.ViewColumn.Beside,
+            preserveFocus: true,
+            selection: sel,
+          })
+        } catch {
+          // file not found or unreadable — ignore silently
         }
         return
       }
