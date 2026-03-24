@@ -18,14 +18,14 @@ interface Session {
  * Encode a workspace folder path the same way Claude Code does:
  * /Users/jane/my_project → -Users-jane-my_project
  */
-function encodeProjectPath(projectPath: string): string {
+export function encodeProjectPath(projectPath: string): string {
   return projectPath.replace(/[/_]/g, '-')
 }
 
 /**
  * Get the Claude projects directory.
  */
-function getClaudeProjectsDir(): string {
+export function getClaudeProjectsDir(): string {
   return path.join(os.homedir(), '.claude', 'projects')
 }
 
@@ -156,8 +156,8 @@ async function discoverSessions(workspacePath: string): Promise<Session[]> {
 
       try {
         const stat = fs.statSync(jsonlPath)
-        // Skip tiny files (< 100 bytes are likely empty/corrupt)
-        if (stat.size < 100) return
+        // Skip empty files (likely still being created)
+        if (stat.size < 2) return
 
         const meta = await extractSessionMeta(jsonlPath)
 
@@ -253,6 +253,10 @@ export class SessionsProvider implements vscode.TreeDataProvider<SessionItem> {
 
     this.sessions = await discoverSessions(this.workspacePath)
     return this.sessions.map((s) => new SessionItem(s))
+  }
+
+  getSession(sessionId: string): Session | undefined {
+    return this.sessions.find((s) => s.id === sessionId)
   }
 
   refresh(): void {
