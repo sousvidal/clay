@@ -15,7 +15,7 @@ import {
   Check,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
-import type { Turn, SessionMeta, TokenUsage, Attachment } from '../../lib/types'
+import type { Turn, SessionMeta, TokenUsage, Attachment, UserAttachment } from '../../lib/types'
 import { BlockRenderer } from './BlockRenderers'
 import { Markdown } from './Markdown'
 
@@ -202,14 +202,47 @@ function SessionHeader({ meta, isActive }: SessionHeaderProps): React.JSX.Elemen
 // ── Turn ─────────────────────────────────────────────────────────────
 
 function TurnView({ turn }: { turn: Turn }): React.JSX.Element {
+  const images = turn.userAttachments.filter((a: UserAttachment) => a.isImage)
+  const docs = turn.userAttachments.filter((a: UserAttachment) => !a.isImage)
+  const hasUserContent = turn.userMessage || turn.userAttachments.length > 0
+
   return (
     <div className="space-y-6 py-4">
-      {turn.userMessage && (
+      {hasUserContent && (
         <div className="flex justify-end gap-3 px-6">
-          <div className="max-w-[85%]">
-            <div className="rounded-2xl rounded-tr-sm border border-border/40 bg-muted/50 px-4 py-2.5 text-[13px] leading-relaxed text-foreground">
-              <Markdown content={turn.userMessage} />
-            </div>
+          <div className="max-w-[85%] space-y-1.5">
+            {images.length > 0 && (
+              <div className="flex flex-wrap justify-end gap-1.5">
+                {images.map((att: UserAttachment, i: number) => (
+                  <img
+                    key={i}
+                    src={`data:${att.mediaType};base64,${att.data}`}
+                    className="max-h-48 max-w-xs rounded-xl border border-border/30 object-cover"
+                    alt=""
+                  />
+                ))}
+              </div>
+            )}
+            {docs.length > 0 && (
+              <div className="flex flex-wrap justify-end gap-1.5">
+                {docs.map((att: UserAttachment, i: number) => (
+                  <div
+                    key={i}
+                    className="flex items-center gap-1 rounded-md border border-border/40 bg-muted/30 px-2 py-1 text-[11px]"
+                  >
+                    <FileText className="size-3 shrink-0 text-muted-foreground/60" />
+                    <span className="max-w-[160px] truncate text-muted-foreground">
+                      {att.name || att.mediaType}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {turn.userMessage && (
+              <div className="rounded-2xl rounded-tr-sm border border-border/40 bg-muted/50 px-4 py-2.5 text-[13px] leading-relaxed text-foreground">
+                <Markdown content={turn.userMessage} />
+              </div>
+            )}
           </div>
           <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
             <User className="size-3.5" />
@@ -276,11 +309,21 @@ export function Conversation({
   const [model, setModel] = useState<string>('sonnet')
   const [effort, setEffort] = useState<string | null>(null)
   const [selectorOpen, setSelectorOpen] = useState(false)
+  const [pendingUserMessage, setPendingUserMessage] = useState<{
+    text: string
+    attachments: Attachment[]
+  } | null>(null)
 
   useEffect(() => {
     if (!isAtBottom.current || !scrollRef.current) return
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-  }, [turns])
+  }, [turns, pendingUserMessage])
+
+  // Clear pending message when real turns arrive from JSONL
+  useEffect(() => {
+    if (pendingUserMessage !== null) setPendingUserMessage(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [turns.length])
 
   useEffect(() => {
     if (!selectorOpen) return
@@ -299,7 +342,6 @@ export function Conversation({
     isAtBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60
   }
 
-  // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: turns.length,
     getScrollElement: () => scrollRef.current,
@@ -328,6 +370,9 @@ export function Conversation({
     setInputValue('')
     const toSend = [...attachments]
     setAttachments([])
+    // Show message + attachments immediately (optimistic UI)
+    setPendingUserMessage({ text, attachments: toSend })
+    // Revoke object URLs after capturing for pending display (data URIs used for rendering)
     toSend.forEach((a) => {
       if (a.previewUrl) URL.revokeObjectURL(a.previewUrl)
     })
@@ -358,6 +403,47 @@ export function Conversation({
             </div>
           ))}
         </div>
+
+        {/* Pending user message (optimistic display while JSONL is being written) */}
+        {pendingUserMessage && (
+          <div className="mx-auto max-w-5xl py-4">
+            <div className="flex justify-end gap-3 px-6">
+              <div className="max-w-[85%] space-y-1.5">
+                {pendingUserMessage.attachments
+                  .filter((a) => a.mediaType.startsWith('image/'))
+                  .map((att, i) => (
+                    <div key={i} className="flex justify-end">
+                      <img
+                        src={`data:${att.mediaType};base64,${att.data}`}
+                        className="max-h-48 max-w-xs rounded-xl border border-border/30 object-cover"
+                        alt=""
+                      />
+                    </div>
+                  ))}
+                {pendingUserMessage.attachments
+                  .filter((a) => !a.mediaType.startsWith('image/'))
+                  .map((att, i) => (
+                    <div key={i} className="flex justify-end">
+                      <div className="flex items-center gap-1 rounded-md border border-border/40 bg-muted/30 px-2 py-1 text-[11px]">
+                        <FileText className="size-3 shrink-0 text-muted-foreground/60" />
+                        <span className="max-w-[160px] truncate text-muted-foreground">
+                          {att.name}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                {pendingUserMessage.text && (
+                  <div className="rounded-2xl rounded-tr-sm border border-border/40 bg-muted/50 px-4 py-2.5 text-[13px] leading-relaxed text-foreground">
+                    <Markdown content={pendingUserMessage.text} />
+                  </div>
+                )}
+              </div>
+              <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                <User className="size-3.5" />
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Input area */}
@@ -404,77 +490,6 @@ export function Conversation({
             </div>
           )}
 
-          {/* Model / effort selector */}
-          <div ref={selectorRef} className="relative px-3 pb-1">
-            <button
-              onClick={() => setSelectorOpen((prev) => !prev)}
-              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground/40 transition-colors hover:bg-foreground/5 hover:text-muted-foreground/70"
-            >
-              <span>{MODELS.find((m) => m.id === model)?.label ?? model}</span>
-              {effort && <span className="text-muted-foreground/25">·</span>}
-              {effort && <span>{effort}</span>}
-              <ChevronDown className="size-2.5" />
-            </button>
-
-            {selectorOpen && (
-              <div className="absolute bottom-full left-0 z-10 mb-1 min-w-[160px] rounded-md border border-border/50 bg-popover p-1.5 shadow-md">
-                <div className="mb-1 px-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/40">
-                  Model
-                </div>
-                {MODELS.map((m) => (
-                  <button
-                    key={m.id}
-                    onClick={() => {
-                      setModel(m.id)
-                      setSelectorOpen(false)
-                    }}
-                    className={cn(
-                      'flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[11px] transition-colors hover:bg-accent',
-                      model === m.id ? 'text-foreground' : 'text-muted-foreground',
-                    )}
-                  >
-                    {model === m.id ? (
-                      <Check className="size-2.5 shrink-0" />
-                    ) : (
-                      <span className="size-2.5 shrink-0" />
-                    )}
-                    {m.label}
-                  </button>
-                ))}
-
-                <div className="my-1 border-t border-border/30" />
-                <div className="mb-1 px-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/40">
-                  Thinking effort
-                </div>
-                {(
-                  [{ id: null, label: 'Default' }, ...EFFORTS] as Array<{
-                    id: string | null
-                    label: string
-                  }>
-                ).map((e) => (
-                  <button
-                    key={e.id ?? 'default'}
-                    onClick={() => {
-                      setEffort(e.id)
-                      setSelectorOpen(false)
-                    }}
-                    className={cn(
-                      'flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[11px] transition-colors hover:bg-accent',
-                      effort === e.id ? 'text-foreground' : 'text-muted-foreground',
-                    )}
-                  >
-                    {effort === e.id ? (
-                      <Check className="size-2.5 shrink-0" />
-                    ) : (
-                      <span className="size-2.5 shrink-0" />
-                    )}
-                    {e.label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
           {/* Input row */}
           <div className="flex items-center gap-2 px-3 py-1.5">
             <button
@@ -491,6 +506,77 @@ export function Conversation({
             >
               <ImageIcon className="size-3.5" />
             </button>
+
+            {/* Model / effort selector */}
+            <div ref={selectorRef} className="relative shrink-0">
+              <button
+                onClick={() => setSelectorOpen((prev) => !prev)}
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground/40 transition-colors hover:bg-foreground/5 hover:text-muted-foreground/70"
+              >
+                <span>{MODELS.find((m) => m.id === model)?.label ?? model}</span>
+                {effort && <span className="text-muted-foreground/25">·</span>}
+                {effort && <span>{effort}</span>}
+                <ChevronDown className="size-2.5" />
+              </button>
+
+              {selectorOpen && (
+                <div className="absolute bottom-full left-0 z-10 mb-1 min-w-[160px] rounded-md border border-border/50 bg-popover p-1.5 shadow-md">
+                  <div className="mb-1 px-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/40">
+                    Model
+                  </div>
+                  {MODELS.map((m) => (
+                    <button
+                      key={m.id}
+                      onClick={() => {
+                        setModel(m.id)
+                        setSelectorOpen(false)
+                      }}
+                      className={cn(
+                        'flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[11px] transition-colors hover:bg-accent',
+                        model === m.id ? 'text-foreground' : 'text-muted-foreground',
+                      )}
+                    >
+                      {model === m.id ? (
+                        <Check className="size-2.5 shrink-0" />
+                      ) : (
+                        <span className="size-2.5 shrink-0" />
+                      )}
+                      {m.label}
+                    </button>
+                  ))}
+
+                  <div className="my-1 border-t border-border/30" />
+                  <div className="mb-1 px-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/40">
+                    Thinking effort
+                  </div>
+                  {(
+                    [{ id: null, label: 'Default' }, ...EFFORTS] as Array<{
+                      id: string | null
+                      label: string
+                    }>
+                  ).map((e) => (
+                    <button
+                      key={e.id ?? 'default'}
+                      onClick={() => {
+                        setEffort(e.id)
+                        setSelectorOpen(false)
+                      }}
+                      className={cn(
+                        'flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[11px] transition-colors hover:bg-accent',
+                        effort === e.id ? 'text-foreground' : 'text-muted-foreground',
+                      )}
+                    >
+                      {effort === e.id ? (
+                        <Check className="size-2.5 shrink-0" />
+                      ) : (
+                        <span className="size-2.5 shrink-0" />
+                      )}
+                      {e.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <input
               type="text"
               value={inputValue}

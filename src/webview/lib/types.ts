@@ -63,9 +63,17 @@ export interface TokenUsage {
   cacheCreationTokens?: number
 }
 
+export interface UserAttachment {
+  name: string // filename for docs; empty string for bare images
+  mediaType: string // e.g. 'image/png', 'application/pdf', 'text/plain'
+  data: string // base64 for images/PDFs; raw text for text docs
+  isImage: boolean
+}
+
 export interface Turn {
   id: string
   userMessage: string | null
+  userAttachments: UserAttachment[]
   contentBlocks: ContentBlock[]
   timestamp: string
   durationMs: number | null

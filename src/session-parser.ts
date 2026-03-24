@@ -6,6 +6,7 @@ import type {
   ToolCall,
   SubAgentMessage,
   Turn,
+  UserAttachment,
   ParsedSession,
   TokenUsage,
 } from './webview/lib/types'
@@ -57,6 +58,45 @@ function extractUserText(msg: RawMessage): string | null {
     return parts.length > 0 ? parts.join('\n\n') : null
   }
   return null
+}
+
+function extractUserAttachments(msg: RawMessage): UserAttachment[] {
+  const message = msg.message as { content?: unknown } | undefined
+  if (!message?.content || !Array.isArray(message.content)) return []
+
+  const attachments: UserAttachment[] = []
+  for (const block of message.content as Array<Record<string, unknown>>) {
+    if (block.type === 'image') {
+      const source = block.source as Record<string, unknown> | undefined
+      if (source?.type === 'base64') {
+        attachments.push({
+          name: '',
+          mediaType: (source.media_type as string) ?? 'image/png',
+          data: (source.data as string) ?? '',
+          isImage: true,
+        })
+      }
+    } else if (block.type === 'document') {
+      const source = block.source as Record<string, unknown> | undefined
+      const title = (block.title as string) ?? ''
+      if (source?.type === 'base64') {
+        attachments.push({
+          name: title,
+          mediaType: (source.media_type as string) ?? 'application/octet-stream',
+          data: (source.data as string) ?? '',
+          isImage: false,
+        })
+      } else if (source?.type === 'text') {
+        attachments.push({
+          name: title,
+          mediaType: (source.media_type as string) ?? 'text/plain',
+          data: (source.data as string) ?? '',
+          isImage: false,
+        })
+      }
+    }
+  }
+  return attachments
 }
 
 function extractAssistantBlocks(msg: RawMessage): ContentBlock[] {
@@ -626,6 +666,7 @@ export async function parseSessionFile(jsonlPath: string): Promise<ParsedSession
       currentTurn = {
         id: (msg.uuid as string) ?? `turn-${turns.length}`,
         userMessage: extractUserText(msg),
+        userAttachments: extractUserAttachments(msg),
         contentBlocks: [],
         timestamp: (msg.timestamp as string) ?? '',
         durationMs: null,
