@@ -69,6 +69,15 @@ export interface UserQuestionBlock {
   status: 'pending' | 'answered'
 }
 
+// A question that arrived via the PreToolUse hook (before the tool runs).
+// The user's answer is sent back as updatedInput in the hook response.
+export interface PendingHookQuestion {
+  requestId: string
+  questions: UserQuestionItem[]
+  // Full original tool_input, used to build the updatedInput for the hook response.
+  toolInput: Record<string, unknown>
+}
+
 export type ContentBlock =
   | TextBlock
   | ThinkingBlock

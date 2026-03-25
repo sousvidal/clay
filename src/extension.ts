@@ -21,17 +21,25 @@ interface PendingPermission {
   timer: ReturnType<typeof setTimeout>
 }
 
+interface PendingHookQuestion {
+  res: http.ServerResponse
+  timer: ReturnType<typeof setTimeout>
+  toolInput: Record<string, unknown>
+}
+
 const pendingPermissions = new Map<string, PendingPermission>()
+const pendingHookQuestions = new Map<string, PendingHookQuestion>()
 let permissionServer: http.Server | null = null
 let permissionPort = 0
 
-function hookAllow(res: http.ServerResponse): void {
+function hookAllow(res: http.ServerResponse, updatedInput?: Record<string, unknown>): void {
   res.writeHead(200, { 'Content-Type': 'application/json' })
-  res.end(
-    JSON.stringify({
-      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
-    }),
-  )
+  const output: Record<string, unknown> = {
+    hookEventName: 'PreToolUse',
+    permissionDecision: 'allow',
+  }
+  if (updatedInput !== undefined) output.updatedInput = updatedInput
+  res.end(JSON.stringify({ hookSpecificOutput: output }))
 }
 
 function hookDeny(res: http.ServerResponse, reason = 'User denied'): void {
@@ -74,10 +82,50 @@ function startPermissionServer(): void {
           toolInput: hookBody.tool_input ?? {},
         }
 
-        // AskUserQuestion is never a real tool — it's Claude asking the user
-        // a question. Always allow it so the question renders in the chat.
+        // AskUserQuestion: hold the hook response, show questions in the Clay UI,
+        // and return the user's answers as updatedInput so Claude Code can call
+        // the tool with the answers pre-populated (it uses requiresUserInteraction).
         if (payload.toolName === 'AskUserQuestion') {
-          hookAllow(res)
+          const panel = openPanels.get(payload.sessionId)
+          if (!panel) {
+            hookDeny(res, 'No active panel')
+            return
+          }
+
+          const timer = setTimeout(() => {
+            pendingHookQuestions.delete(payload.requestId)
+            try {
+              hookDeny(res, 'Timed out waiting for user answer')
+            } catch {
+              // socket may already be gone
+            }
+          }, 3_600_000)
+
+          pendingHookQuestions.set(payload.requestId, { res, timer, toolInput: payload.toolInput })
+
+          // Parse questions from tool_input and forward to the webview
+          const rawQuestions = Array.isArray(payload.toolInput.questions)
+            ? (payload.toolInput.questions as Record<string, unknown>[]).map((q) => ({
+                question: String(q.question ?? ''),
+                header: String(q.header ?? ''),
+                options: Array.isArray(q.options)
+                  ? (q.options as Record<string, unknown>[]).map((o) => ({
+                      label: String(o.label ?? ''),
+                      description: String(o.description ?? ''),
+                    }))
+                  : [],
+                multiSelect: Boolean(q.multiSelect),
+              }))
+            : []
+
+          panel.webview.postMessage({
+            command: 'askUserQuestion',
+            hookQuestion: {
+              requestId: payload.requestId,
+              questions: rawQuestions,
+              toolInput: payload.toolInput,
+            },
+          })
           return
         }
 
@@ -636,6 +684,58 @@ function wirePanelMessages(
         return
       }
 
+      if (msg.command === 'answerUserQuestion') {
+        const { requestId, answers } = msg as {
+          requestId?: string
+          answers?: Record<string, string>
+        }
+        if (!requestId || !answers) return
+        const pending = pendingHookQuestions.get(requestId)
+        if (pending) {
+          clearTimeout(pending.timer)
+          pendingHookQuestions.delete(requestId)
+          try {
+            // Unblock the PreToolUse hook so Claude Code can proceed.
+            hookAllow(pending.res)
+          } catch {
+            // socket may already be gone
+          }
+          // Deliver the answer as a tool_result via stdin — requiresUserInteraction
+          // means the tool waits for this, rather than reading from updatedInput.
+          const proc = activeProcesses.get(session.id)
+          if (proc && proc.exitCode === null) {
+            const answerValues = Object.values(answers)
+            const content =
+              answerValues.length === 1 ? (answerValues[0] ?? '') : JSON.stringify(answers)
+            const payload = JSON.stringify({
+              type: 'user',
+              message: {
+                role: 'user',
+                content: [{ type: 'tool_result', tool_use_id: requestId, content }],
+              },
+            })
+            proc.stdin?.write(payload + '\n')
+          }
+        }
+        return
+      }
+
+      if (msg.command === 'dismissHookQuestion') {
+        const { requestId } = msg as { requestId?: string }
+        if (!requestId) return
+        const pending = pendingHookQuestions.get(requestId)
+        if (pending) {
+          clearTimeout(pending.timer)
+          pendingHookQuestions.delete(requestId)
+          try {
+            hookDeny(pending.res, 'User dismissed the question')
+          } catch {
+            // socket may already be gone
+          }
+        }
+        return
+      }
+
       if (msg.command === 'answerQuestion') {
         const { toolUseId, answer } = msg
         if (!toolUseId || answer === undefined) return
@@ -742,6 +842,26 @@ function wirePanelMessages(
           })
         } catch {
           // file not found or unreadable — ignore silently
+        }
+        return
+      }
+
+      // ── Stop session ─────────────────────────────────────────────────
+      if (msg.command === 'stopSession') {
+        const proc = activeProcesses.get(session.id)
+        if (proc && proc.exitCode === null) {
+          killProcess(session.id)
+          session.spawnMode = 'resume'
+          // Re-send session with isActive=false so the UI reflects the stopped state
+          const jsonlPath = getJsonlPath(workspacePath, session.id)
+          try {
+            if (fs.existsSync(jsonlPath)) {
+              const parsed = await parseSessionFile(jsonlPath)
+              sendSession(panel, parsed, false, 'updateSession')
+            }
+          } catch {
+            // ignore
+          }
         }
         return
       }

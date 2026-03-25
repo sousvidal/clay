@@ -7,6 +7,7 @@ import type {
   SlashCommand,
   WorkspaceFile,
   PermissionRequest,
+  PendingHookQuestion,
   ContentBlock,
   SavedPlan,
 } from './lib/types'
@@ -41,6 +42,7 @@ export function App(): React.JSX.Element {
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([])
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([])
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([])
+  const [pendingHookQuestion, setPendingHookQuestion] = useState<PendingHookQuestion | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
 
   // Plan mode state (owned here because IPC messages arrive at App level)
@@ -57,6 +59,7 @@ export function App(): React.JSX.Element {
         commands?: SlashCommand[]
         files?: WorkspaceFile[]
         request?: PermissionRequest
+        hookQuestion?: PendingHookQuestion
         block?: ContentBlock
         content?: string
         readOnly?: boolean
@@ -92,6 +95,9 @@ export function App(): React.JSX.Element {
       }
       if (msg.command === 'permissionRequest' && msg.request) {
         setPendingPermissions((prev) => [...prev, msg.request!])
+      }
+      if (msg.command === 'askUserQuestion' && msg.hookQuestion) {
+        setPendingHookQuestion(msg.hookQuestion)
       }
       if (msg.command === 'loadPlan' && msg.content) {
         setPlanContent(msg.content)
@@ -154,6 +160,25 @@ export function App(): React.JSX.Element {
     vscodeApi.postMessage({ command: 'permissionResponse', requestId, allow, remember, toolName })
   }
 
+  function handleHookQuestionAnswer(answers: Record<string, string>): void {
+    if (!pendingHookQuestion) return
+    const { requestId } = pendingHookQuestion
+    setPendingHookQuestion(null)
+    vscodeApi.postMessage({ command: 'answerUserQuestion', requestId, answers })
+  }
+
+  function handleDismissHookQuestion(): void {
+    if (!pendingHookQuestion) return
+    const { requestId } = pendingHookQuestion
+    setPendingHookQuestion(null)
+    vscodeApi.postMessage({ command: 'dismissHookQuestion', requestId })
+  }
+
+  function handleStopSession(): void {
+    setIsProcessing(false)
+    vscodeApi.postMessage({ command: 'stopSession' })
+  }
+
   const handleTogglePlanMode = useCallback((enabled: boolean) => {
     setPlanMode(enabled)
     if (!enabled) {
@@ -209,10 +234,14 @@ export function App(): React.JSX.Element {
           isActive={isActive}
           isProcessing={isProcessing}
           onSendMessage={handleSendMessage}
+          onStopSession={handleStopSession}
           slashCommands={slashCommands}
           workspaceFiles={workspaceFiles}
           pendingPermission={pendingPermissions[0] ?? null}
           onPermissionResponse={handlePermissionResponse}
+          pendingHookQuestion={pendingHookQuestion}
+          onHookQuestionAnswer={handleHookQuestionAnswer}
+          onDismissHookQuestion={handleDismissHookQuestion}
           planMode={planMode}
           planContent={activePlanContent}
           planReadOnly={planReadOnly}
