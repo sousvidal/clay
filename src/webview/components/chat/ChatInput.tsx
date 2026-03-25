@@ -1,20 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import {
-  ArrowUp,
-  Loader2,
-  Paperclip,
-  Image as ImageIcon,
-  FileText,
-  X,
-  ChevronDown,
-  Check,
-  Folder,
-  Square,
-} from 'lucide-react'
+import { ArrowUp, Loader2, Paperclip, Image as ImageIcon, FileText, X, Square } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import type { Attachment, SlashCommand, WorkspaceFile, UserAttachment } from '../../lib/types'
 import { vscodeApi } from '../../lib/vscode'
-import { MODELS, EFFORTS, isImageType, readFileAsAttachment } from './conversation-utils'
+import { isImageType, readFileAsAttachment } from './conversation-utils'
+import { ModelSelector } from './ModelSelector'
+import { SlashAutocomplete, FileAutocomplete } from './AutocompletePopup'
 
 interface ChatInputProps {
   isActive: boolean
@@ -54,7 +45,6 @@ export function ChatInput({
   const imageInputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  const selectorRef = useRef<HTMLDivElement>(null)
 
   const [inputValue, setInputValue] = useState('')
   const [sending, setSending] = useState(false)
@@ -62,7 +52,6 @@ export function ChatInput({
   const [dragOver, setDragOver] = useState(false)
   const [model, setModel] = useState<string>('sonnet')
   const [effort, setEffort] = useState<string | null>(null)
-  const [selectorOpen, setSelectorOpen] = useState(false)
   const [highlightedIndex, setHighlightedIndex] = useState(0)
   const [fileHighlightedIndex, setFileHighlightedIndex] = useState(0)
 
@@ -149,17 +138,6 @@ export function ChatInput({
     }
   }
 
-  useEffect(() => {
-    if (!selectorOpen) return
-    function onPointerDown(e: PointerEvent): void {
-      if (selectorRef.current && !selectorRef.current.contains(e.target as Node)) {
-        setSelectorOpen(false)
-      }
-    }
-    document.addEventListener('pointerdown', onPointerDown)
-    return () => document.removeEventListener('pointerdown', onPointerDown)
-  }, [selectorOpen])
-
   function removeAttachment(id: string): void {
     setAttachments((prev) => {
       const att = prev.find((a) => a.id === id)
@@ -212,6 +190,67 @@ export function ChatInput({
     setTimeout(() => setSending(false), 500)
   }
 
+  function handleKeyDown(e: React.KeyboardEvent): void {
+    if (filteredFiles.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setFileHighlightedIndex((i) => Math.min(i + 1, filteredFiles.length - 1))
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setFileHighlightedIndex((i) => Math.max(i - 1, 0))
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        selectFile(filteredFiles[fileHighlightedIndex])
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setInputValue((prev) => prev.replace(/@\S*$/, ''))
+        return
+      }
+    }
+    if (filteredCommands.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setHighlightedIndex((i) => Math.min(i + 1, filteredCommands.length - 1))
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setHighlightedIndex((i) => Math.max(i - 1, 0))
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        const selected = filteredCommands[highlightedIndex]
+        if (e.key === 'Enter' && selected.name.slice(1) === slashQuery) {
+          handleSend()
+        } else {
+          selectCommand(selected.name)
+        }
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setInputValue('')
+        return
+      }
+    }
+    if (e.key === 'Escape' && isActive) {
+      e.preventDefault()
+      onStopSession()
+      return
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSend()
+    }
+  }
+
   const canSend = !sending && (inputValue.trim().length > 0 || attachments.length > 0)
 
   const fileAccept =
@@ -220,54 +259,16 @@ export function ChatInput({
   return (
     <>
       <div className="relative mx-auto w-full max-w-5xl shrink-0 px-4 pb-3 pt-2">
-        {/* Slash command autocomplete popup */}
-        {filteredCommands.length > 0 && (
-          <div className="absolute bottom-full left-4 right-4 mb-1 max-h-64 overflow-y-auto rounded-md border border-border/50 bg-popover shadow-md">
-            {filteredCommands.map((cmd, i) => (
-              <button
-                key={cmd.name}
-                onMouseDown={(e) => {
-                  e.preventDefault()
-                  selectCommand(cmd.name)
-                }}
-                className={cn(
-                  'flex w-full items-center gap-3 px-3 py-2 text-left text-[12px] transition-colors',
-                  i === highlightedIndex ? 'bg-accent' : 'hover:bg-accent/50',
-                )}
-              >
-                <span className="w-36 shrink-0 font-mono text-foreground">{cmd.name}</span>
-                <span className="truncate text-muted-foreground">{cmd.description}</span>
-              </button>
-            ))}
-          </div>
-        )}
-        {filteredFiles.length > 0 && (
-          <div className="absolute bottom-full left-4 right-4 mb-1 max-h-64 overflow-y-auto rounded-md border border-border/50 bg-popover shadow-md">
-            {filteredFiles.map((file, i) => (
-              <button
-                key={file.path}
-                onMouseDown={(e) => {
-                  e.preventDefault()
-                  selectFile(file)
-                }}
-                className={cn(
-                  'flex w-full items-center gap-3 px-3 py-2 text-left text-[12px] transition-colors',
-                  i === fileHighlightedIndex ? 'bg-accent' : 'hover:bg-accent/50',
-                )}
-              >
-                {file.isDirectory ? (
-                  <Folder className="size-3 shrink-0 text-muted-foreground/60" />
-                ) : (
-                  <FileText className="size-3 shrink-0 text-muted-foreground/60" />
-                )}
-                <span className="min-w-0 flex-1 truncate font-mono text-foreground">
-                  {file.relativePath}
-                </span>
-                {file.isDirectory && <span className="text-muted-foreground/40">›</span>}
-              </button>
-            ))}
-          </div>
-        )}
+        <SlashAutocomplete
+          commands={filteredCommands}
+          highlightedIndex={highlightedIndex}
+          onSelect={selectCommand}
+        />
+        <FileAutocomplete
+          files={filteredFiles}
+          highlightedIndex={fileHighlightedIndex}
+          onSelect={selectFile}
+        />
         <div
           className={cn(
             'rounded-md border border-input bg-background transition-colors',
@@ -327,173 +328,20 @@ export function ChatInput({
               <ImageIcon className="size-3.5" />
             </button>
 
-            {/* Model / effort selector */}
-            <div ref={selectorRef} className="relative shrink-0">
-              <button
-                onClick={() => setSelectorOpen((prev) => !prev)}
-                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground/40 transition-colors hover:bg-foreground/5 hover:text-muted-foreground/70"
-              >
-                <span>{MODELS.find((m) => m.id === model)?.label ?? model}</span>
-                {effort && <span className="text-muted-foreground/25">·</span>}
-                {effort && <span>{effort}</span>}
-                {planMode && <span className="text-muted-foreground/25">·</span>}
-                {planMode && <span>Plan</span>}
-                <ChevronDown className="size-2.5" />
-              </button>
-
-              {selectorOpen && (
-                <div className="absolute bottom-full left-0 z-10 mb-1 min-w-[160px] rounded-md border border-border/50 bg-popover p-1.5 shadow-md">
-                  <div className="mb-1 px-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/40">
-                    Model
-                  </div>
-                  {MODELS.map((m) => (
-                    <button
-                      key={m.id}
-                      onClick={() => {
-                        setModel(m.id)
-                        setSelectorOpen(false)
-                      }}
-                      className={cn(
-                        'flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[11px] transition-colors hover:bg-accent',
-                        model === m.id ? 'text-foreground' : 'text-muted-foreground',
-                      )}
-                    >
-                      {model === m.id ? (
-                        <Check className="size-2.5 shrink-0" />
-                      ) : (
-                        <span className="size-2.5 shrink-0" />
-                      )}
-                      {m.label}
-                    </button>
-                  ))}
-
-                  <div className="my-1 border-t border-border/30" />
-                  <div className="mb-1 px-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/40">
-                    Thinking effort
-                  </div>
-                  {(
-                    [{ id: null, label: 'Default' }, ...EFFORTS] as Array<{
-                      id: string | null
-                      label: string
-                    }>
-                  ).map((e) => (
-                    <button
-                      key={e.id ?? 'default'}
-                      onClick={() => {
-                        setEffort(e.id)
-                        setSelectorOpen(false)
-                      }}
-                      className={cn(
-                        'flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[11px] transition-colors hover:bg-accent',
-                        effort === e.id ? 'text-foreground' : 'text-muted-foreground',
-                      )}
-                    >
-                      {effort === e.id ? (
-                        <Check className="size-2.5 shrink-0" />
-                      ) : (
-                        <span className="size-2.5 shrink-0" />
-                      )}
-                      {e.label}
-                    </button>
-                  ))}
-
-                  <div className="my-1 border-t border-border/30" />
-                  <div className="mb-1 px-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/40">
-                    Mode
-                  </div>
-                  {(
-                    [
-                      { id: false, label: 'Agent' },
-                      { id: true, label: 'Plan' },
-                    ] as const
-                  ).map((m) => (
-                    <button
-                      key={String(m.id)}
-                      onClick={() => {
-                        onTogglePlanMode(m.id)
-                        setSelectorOpen(false)
-                      }}
-                      className={cn(
-                        'flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[11px] transition-colors hover:bg-accent',
-                        planMode === m.id ? 'text-foreground' : 'text-muted-foreground',
-                      )}
-                    >
-                      {planMode === m.id ? (
-                        <Check className="size-2.5 shrink-0" />
-                      ) : (
-                        <span className="size-2.5 shrink-0" />
-                      )}
-                      {m.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            <ModelSelector
+              model={model}
+              effort={effort}
+              planMode={planMode}
+              onModelChange={setModel}
+              onEffortChange={setEffort}
+              onTogglePlanMode={onTogglePlanMode}
+            />
             <input
               ref={inputRef}
               type="text"
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (filteredFiles.length > 0) {
-                  if (e.key === 'ArrowDown') {
-                    e.preventDefault()
-                    setFileHighlightedIndex((i) => Math.min(i + 1, filteredFiles.length - 1))
-                    return
-                  }
-                  if (e.key === 'ArrowUp') {
-                    e.preventDefault()
-                    setFileHighlightedIndex((i) => Math.max(i - 1, 0))
-                    return
-                  }
-                  if (e.key === 'Enter' || e.key === 'Tab') {
-                    e.preventDefault()
-                    selectFile(filteredFiles[fileHighlightedIndex])
-                    return
-                  }
-                  if (e.key === 'Escape') {
-                    e.preventDefault()
-                    setInputValue((prev) => prev.replace(/@\S*$/, ''))
-                    return
-                  }
-                }
-                if (filteredCommands.length > 0) {
-                  if (e.key === 'ArrowDown') {
-                    e.preventDefault()
-                    setHighlightedIndex((i) => Math.min(i + 1, filteredCommands.length - 1))
-                    return
-                  }
-                  if (e.key === 'ArrowUp') {
-                    e.preventDefault()
-                    setHighlightedIndex((i) => Math.max(i - 1, 0))
-                    return
-                  }
-                  if (e.key === 'Enter' || e.key === 'Tab') {
-                    e.preventDefault()
-                    const selected = filteredCommands[highlightedIndex]
-                    if (e.key === 'Enter' && selected.name.slice(1) === slashQuery) {
-                      handleSend()
-                    } else {
-                      selectCommand(selected.name)
-                    }
-                    return
-                  }
-                  if (e.key === 'Escape') {
-                    e.preventDefault()
-                    setInputValue('')
-                    return
-                  }
-                }
-                if (e.key === 'Escape' && isActive) {
-                  e.preventDefault()
-                  onStopSession()
-                  return
-                }
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  handleSend()
-                }
-              }}
+              onKeyDown={handleKeyDown}
               disabled={sending}
               placeholder="Message Claude..."
               className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground/60 disabled:opacity-50"
