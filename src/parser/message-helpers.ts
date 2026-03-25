@@ -1,10 +1,4 @@
-import type {
-  ContentBlock,
-  UserAttachment,
-  TokenUsage,
-  UserQuestionBlock,
-  UserQuestionItem,
-} from '../webview/lib/types'
+import type { ContentBlock, UserAttachment, TokenUsage } from '../webview/lib/types'
 
 // ── Raw JSONL message types ─────────────────────────────────────────
 
@@ -118,53 +112,15 @@ export function extractAssistantBlocks(msg: RawMessage): ContentBlock[] {
         }
         break
       case 'tool_use':
-        if (block.name === 'AskUserQuestion') {
-          const input = (block.input as Record<string, unknown>) ?? {}
-          let questions: UserQuestionItem[]
-          if (Array.isArray(input.questions)) {
-            questions = (input.questions as Record<string, unknown>[]).map((q) => ({
-              question: String(q.question ?? ''),
-              header: String(q.header ?? ''),
-              options: Array.isArray(q.options)
-                ? (q.options as Record<string, unknown>[]).map((o) => ({
-                    label: String(o.label ?? ''),
-                    description: String(o.description ?? ''),
-                  }))
-                : [],
-              multiSelect: Boolean(q.multiSelect),
-            }))
-          } else {
-            const rawOptions = Array.isArray(input.options) ? input.options : []
-            questions = [
-              {
-                question: String(input.question ?? ''),
-                header: '',
-                options: (rawOptions as Record<string, unknown>[]).map((o) => ({
-                  label: String(o.label ?? ''),
-                  description: String(o.description ?? ''),
-                })),
-                multiSelect: Boolean(input.multiSelect),
-              },
-            ]
-          }
-          const qBlock: UserQuestionBlock = {
-            kind: 'user_question',
-            toolCallId: block.id as string,
-            questions,
-            status: 'pending',
-          }
-          blocks.push(qBlock)
-        } else {
-          blocks.push({
-            kind: 'tool_call',
-            toolCall: {
-              id: block.id as string,
-              name: block.name as string,
-              input: (block.input as Record<string, unknown>) ?? {},
-              status: 'done',
-            },
-          })
-        }
+        blocks.push({
+          kind: 'tool_call',
+          toolCall: {
+            id: block.id as string,
+            name: block.name as string,
+            input: (block.input as Record<string, unknown>) ?? {},
+            status: 'done',
+          },
+        })
         break
     }
   }

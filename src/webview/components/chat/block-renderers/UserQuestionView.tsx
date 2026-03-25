@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { vscodeApi } from '../../../lib/vscode'
-import type { UserQuestionBlock, UserQuestionItem } from '../../../lib/types'
+import type { UserQuestionItem } from '../../../lib/types'
 
 interface SingleQuestionProps {
   q: UserQuestionItem
@@ -58,7 +57,7 @@ function SingleQuestion({
             onClick={() => onShowOther(true)}
             className="w-full rounded border border-border/20 px-2.5 py-1.5 text-left text-[12px] text-muted-foreground/60 transition-colors hover:bg-muted/20"
           >
-            Other…
+            Other...
           </button>
         </div>
       )}
@@ -79,7 +78,7 @@ function SingleQuestion({
               onClick={() => onShowOther(false)}
               className="shrink-0 text-[11px] text-muted-foreground/50 hover:text-muted-foreground"
             >
-              ← Back
+              Back
             </button>
           )}
           <input
@@ -94,7 +93,7 @@ function SingleQuestion({
               }
             }}
             className="min-w-0 flex-1 rounded border border-input bg-background/60 px-2 py-1 text-[12px] text-foreground outline-none placeholder:text-muted-foreground/50"
-            placeholder="Your answer…"
+            placeholder="Your answer..."
           />
           {deferSubmit ? null : (
             <button
@@ -112,15 +111,13 @@ function SingleQuestion({
 }
 
 export function UserQuestionView({
-  block,
+  questions,
   onSubmit,
 }: {
-  block: UserQuestionBlock
-  // If provided, called with the answers map instead of sending answerQuestion to the extension.
-  onSubmit?: (answers: Record<string, string>) => void
+  questions: UserQuestionItem[]
+  onSubmit: (answers: Record<string, string>) => void
 }): React.JSX.Element | null {
-  const { questions, toolCallId } = block
-  const [answered, setAnswered] = useState(block.status === 'answered')
+  const [answered, setAnswered] = useState(false)
   const [selections, setSelections] = useState<Set<string>[]>(() =>
     questions.map(() => new Set<string>()),
   )
@@ -148,13 +145,7 @@ export function UserQuestionView({
       if (ans) answers[questions[i].question] = ans
     }
     setAnswered(true)
-    if (onSubmit) {
-      onSubmit(answers)
-    } else {
-      const content =
-        questions.length === 1 ? (Object.values(answers)[0] ?? '') : JSON.stringify(answers)
-      vscodeApi.postMessage({ command: 'answerQuestion', toolUseId: toolCallId, answer: content })
-    }
+    onSubmit(answers)
   }
 
   function handleSelect(qi: number, label: string): void {

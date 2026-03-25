@@ -13,7 +13,6 @@ interface ChatInputProps {
   workspaceFiles: WorkspaceFile[]
   planMode: boolean
   turnsLength: number
-  pendingHookQuestion: boolean
   onSendMessage: (
     text: string,
     attachments: Attachment[],
@@ -23,6 +22,7 @@ interface ChatInputProps {
   ) => void
   onStopSession: () => void
   onTogglePlanMode: (enabled: boolean) => void
+  pendingHookQuestion: boolean
   onDismissHookQuestion: () => void
   onSentAttachments: (idx: number, attachments: UserAttachment[]) => void
   onPendingUserMessage: (msg: { text: string; attachments: Attachment[] } | null) => void
@@ -34,10 +34,10 @@ export function ChatInput({
   workspaceFiles,
   planMode,
   turnsLength,
-  pendingHookQuestion,
   onSendMessage,
   onStopSession,
   onTogglePlanMode,
+  pendingHookQuestion,
   onDismissHookQuestion,
   onSentAttachments,
   onPendingUserMessage,

@@ -12,7 +12,6 @@ import type {
   PermissionRequest,
   PendingHookQuestion,
   SavedPlan,
-  UserQuestionBlock,
 } from '../../lib/types'
 import { UserQuestionView } from './block-renderers'
 import { Markdown } from './Markdown'
@@ -92,6 +91,13 @@ export function Conversation({
 }: ConversationProps): React.JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
   const isAtBottom = useRef(true)
+
+  // Track answers the user gave to AskUserQuestion dialogs, keyed by tool call id.
+  // These are kept in local state because the answers go via stdin and don't
+  // appear as a visible user message in the JSONL.
+  const [answeredQuestions, setAnsweredQuestions] = useState<Map<string, Record<string, string>>>(
+    new Map(),
+  )
 
   const [pendingUserMessage, setPendingUserMessage] = useState<{
     text: string
@@ -188,7 +194,7 @@ export function Conversation({
                 className="absolute left-0 top-0 w-full"
                 style={{ transform: `translateY(${virtualItem.start}px)` }}
               >
-                <TurnView turn={merged} planMode={planMode} />
+                <TurnView turn={merged} planMode={planMode} answeredQuestions={answeredQuestions} />
               </div>
             )
           })}
@@ -248,15 +254,13 @@ export function Conversation({
             <MessageCircleQuestion className="mt-0.5 size-3.5 shrink-0 text-blue-500/70" />
             <div className="min-w-0 flex-1">
               <UserQuestionView
-                block={
-                  {
-                    kind: 'user_question',
-                    toolCallId: pendingHookQuestion.requestId,
-                    questions: pendingHookQuestion.questions,
-                    status: 'pending',
-                  } satisfies UserQuestionBlock
-                }
-                onSubmit={onHookQuestionAnswer}
+                questions={pendingHookQuestion.questions}
+                onSubmit={(answers) => {
+                  setAnsweredQuestions((prev) =>
+                    new Map(prev).set(pendingHookQuestion.requestId, answers),
+                  )
+                  onHookQuestionAnswer(answers)
+                }}
               />
             </div>
           </div>
@@ -270,10 +274,10 @@ export function Conversation({
         workspaceFiles={workspaceFiles}
         planMode={planMode}
         turnsLength={turns.length}
-        pendingHookQuestion={pendingHookQuestion !== null}
         onSendMessage={onSendMessage}
         onStopSession={onStopSession}
         onTogglePlanMode={onTogglePlanMode}
+        pendingHookQuestion={pendingHookQuestion !== null}
         onDismissHookQuestion={onDismissHookQuestion}
         onSentAttachments={(idx, atts) =>
           setSentAttachments((prev) => new Map(prev).set(idx, atts))

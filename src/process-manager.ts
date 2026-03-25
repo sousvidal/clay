@@ -38,7 +38,7 @@ export function spawnClaudeProcess(
           hooks: [
             {
               type: 'http',
-              url: `http://127.0.0.1:${getPermissionPort()}/permission`,
+              url: `http://127.0.0.1:${getPermissionPort()}/hook/pre-tool-use`,
               timeout: 3600,
             },
           ],

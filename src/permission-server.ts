@@ -52,136 +52,142 @@ export function hookDeny(res: http.ServerResponse, reason = 'User denied'): void
   )
 }
 
-// ── Server ───────────────────────────────────────────────────────────
+// ── Route: PreToolUse ───────────────────────────────────────────────
 
-export function startPermissionServer(): void {
-  permissionServer = http.createServer((req, res) => {
-    if (req.method !== 'POST' || req.url !== '/permission') {
-      res.writeHead(404)
-      res.end()
-      return
-    }
+function handlePreToolUse(req: http.IncomingMessage, res: http.ServerResponse): void {
+  let body = ''
+  req.on('data', (chunk: Buffer) => {
+    body += chunk.toString()
+  })
+  req.on('end', () => {
+    try {
+      const hookBody = JSON.parse(body) as {
+        tool_name: string
+        tool_use_id: string
+        session_id: string
+        tool_input?: Record<string, unknown>
+      }
+      const payload = {
+        requestId: hookBody.tool_use_id || `${Date.now()}`,
+        sessionId: hookBody.session_id,
+        toolName: hookBody.tool_name,
+        toolInput: hookBody.tool_input ?? {},
+      }
 
-    let body = ''
-    req.on('data', (chunk: Buffer) => {
-      body += chunk.toString()
-    })
-    req.on('end', () => {
-      try {
-        const hookBody = JSON.parse(body) as {
-          tool_name: string
-          tool_use_id: string
-          session_id: string
-          tool_input?: Record<string, unknown>
-        }
-        const payload = {
-          requestId: hookBody.tool_use_id || `${Date.now()}`,
-          sessionId: hookBody.session_id,
-          toolName: hookBody.tool_name,
-          toolInput: hookBody.tool_input ?? {},
-        }
-
-        // AskUserQuestion: hold the hook response, show questions in the Clay UI,
-        // and return the user's answers as updatedInput so Claude Code can call
-        // the tool with the answers pre-populated (it uses requiresUserInteraction).
-        if (payload.toolName === 'AskUserQuestion') {
-          const panel = openPanels.get(payload.sessionId)
-          if (!panel) {
-            hookDeny(res, 'No active panel')
-            return
-          }
-
-          const timer = setTimeout(() => {
-            pendingHookQuestions.delete(payload.requestId)
-            try {
-              hookDeny(res, 'Timed out waiting for user answer')
-            } catch {
-              // socket may already be gone
-            }
-          }, 3_600_000)
-
-          pendingHookQuestions.set(payload.requestId, {
-            res,
-            timer,
-            toolInput: payload.toolInput,
-          })
-
-          // Parse questions from tool_input and forward to the webview
-          const rawQuestions = Array.isArray(payload.toolInput.questions)
-            ? (payload.toolInput.questions as Record<string, unknown>[]).map((q) => ({
-                question: String(q.question ?? ''),
-                header: String(q.header ?? ''),
-                options: Array.isArray(q.options)
-                  ? (q.options as Record<string, unknown>[]).map((o) => ({
-                      label: String(o.label ?? ''),
-                      description: String(o.description ?? ''),
-                    }))
-                  : [],
-                multiSelect: Boolean(q.multiSelect),
-              }))
-            : []
-
-          panel.webview.postMessage({
-            command: 'askUserQuestion',
-            hookQuestion: {
-              requestId: payload.requestId,
-              questions: rawQuestions,
-              toolInput: payload.toolInput,
-            },
-          })
-          return
-        }
-
-        // Check stored preferences first
-        const prefs =
-          vscode.workspace
-            .getConfiguration('clay')
-            .get<Record<string, 'always_allow' | 'always_deny'>>('toolPermissions') ?? {}
-
-        // For Bash, check granular "Bash:<cmd>" key before the broad "Bash" key
-        let saved = prefs[payload.toolName]
-        if (payload.toolName === 'Bash' && !saved) {
-          const cmd = getBaseCommand(String(payload.toolInput.command ?? ''))
-          if (cmd) saved = prefs[`Bash:${cmd}`]
-        }
-
-        if (saved === 'always_allow') {
-          hookAllow(res)
-          return
-        }
-        if (saved === 'always_deny') {
-          hookDeny(res)
-          return
-        }
-
-        // Route to the correct panel
+      // AskUserQuestion: hold the hook response open, show our custom question
+      // UI in the webview, and deliver the answer via stdin when the user responds.
+      // We block the hook (preventing Claude from continuing) until the user answers.
+      if (payload.toolName === 'AskUserQuestion') {
         const panel = openPanels.get(payload.sessionId)
         if (!panel) {
           hookDeny(res, 'No active panel')
           return
         }
 
-        // Hold the response open until the user decides (max 1 hour)
         const timer = setTimeout(() => {
-          pendingPermissions.delete(payload.requestId)
+          pendingHookQuestions.delete(payload.requestId)
           try {
-            hookDeny(res, 'Timed out')
+            hookDeny(res, 'Timed out waiting for user answer')
           } catch {
             // socket may already be gone
           }
         }, 3_600_000)
 
-        pendingPermissions.set(payload.requestId, { res, timer })
+        pendingHookQuestions.set(payload.requestId, {
+          res,
+          timer,
+          toolInput: payload.toolInput,
+        })
+
+        // Parse questions from tool_input and forward to the webview
+        const rawQuestions = Array.isArray(payload.toolInput.questions)
+          ? (payload.toolInput.questions as Record<string, unknown>[]).map((q) => ({
+              question: String(q.question ?? ''),
+              header: String(q.header ?? ''),
+              options: Array.isArray(q.options)
+                ? (q.options as Record<string, unknown>[]).map((o) => ({
+                    label: String(o.label ?? ''),
+                    description: String(o.description ?? ''),
+                  }))
+                : [],
+              multiSelect: Boolean(q.multiSelect),
+            }))
+          : []
 
         panel.webview.postMessage({
-          command: 'permissionRequest',
-          request: payload,
+          command: 'askUserQuestion',
+          hookQuestion: {
+            requestId: payload.requestId,
+            questions: rawQuestions,
+            toolInput: payload.toolInput,
+          },
         })
-      } catch {
-        res.writeHead(400)
-        res.end()
+        return
       }
-    })
+
+      // Check stored preferences first
+      const prefs =
+        vscode.workspace
+          .getConfiguration('clay')
+          .get<Record<string, 'always_allow' | 'always_deny'>>('toolPermissions') ?? {}
+
+      // For Bash, check granular "Bash:<cmd>" key before the broad "Bash" key
+      let saved = prefs[payload.toolName]
+      if (payload.toolName === 'Bash' && !saved) {
+        const cmd = getBaseCommand(String(payload.toolInput.command ?? ''))
+        if (cmd) saved = prefs[`Bash:${cmd}`]
+      }
+
+      if (saved === 'always_allow') {
+        hookAllow(res)
+        return
+      }
+      if (saved === 'always_deny') {
+        hookDeny(res)
+        return
+      }
+
+      // Route to the correct panel
+      const panel = openPanels.get(payload.sessionId)
+      if (!panel) {
+        hookDeny(res, 'No active panel')
+        return
+      }
+
+      // Hold the response open until the user decides (max 1 hour)
+      const timer = setTimeout(() => {
+        pendingPermissions.delete(payload.requestId)
+        try {
+          hookDeny(res, 'Timed out')
+        } catch {
+          // socket may already be gone
+        }
+      }, 3_600_000)
+
+      pendingPermissions.set(payload.requestId, { res, timer })
+
+      panel.webview.postMessage({
+        command: 'permissionRequest',
+        request: payload,
+      })
+    } catch {
+      res.writeHead(400)
+      res.end()
+    }
+  })
+}
+
+// ── Server ───────────────────────────────────────────────────────────
+
+export function startPermissionServer(): void {
+  permissionServer = http.createServer((req, res) => {
+    if (req.method !== 'POST' || req.url !== '/hook/pre-tool-use') {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+
+    handlePreToolUse(req, res)
   })
 
   permissionServer.listen(0, '127.0.0.1', () => {
@@ -200,6 +206,16 @@ export function stopPermissionServer(): void {
     }
   }
   pendingPermissions.clear()
+
+  for (const [, pending] of pendingHookQuestions) {
+    clearTimeout(pending.timer)
+    try {
+      hookDeny(pending.res, 'Extension deactivating')
+    } catch {
+      // socket may already be gone
+    }
+  }
   pendingHookQuestions.clear()
+
   permissionServer?.close()
 }

@@ -60,6 +60,7 @@ export function wirePanelMessages(
       toolName?: string
       toolUseId?: string
       answer?: string
+      answers?: Record<string, string>
       content?: string
       enabled?: boolean
       planId?: string
@@ -188,43 +189,51 @@ function handleAnswerUserQuestion(
   const { requestId, answers } = msg
   if (!requestId || !answers) return
   const pending = pendingHookQuestions.get(requestId)
-  if (pending) {
-    clearTimeout(pending.timer)
-    pendingHookQuestions.delete(requestId)
-    try {
-      hookAllow(pending.res)
-    } catch {
-      // socket may already be gone
-    }
-    // Deliver the answer as a tool_result via stdin
-    const proc = activeProcesses.get(session.id)
-    if (proc && proc.exitCode === null) {
-      const answerValues = Object.values(answers)
-      const content = answerValues.length === 1 ? (answerValues[0] ?? '') : JSON.stringify(answers)
-      const payload = JSON.stringify({
-        type: 'user',
-        message: {
-          role: 'user',
-          content: [{ type: 'tool_result', tool_use_id: requestId, content }],
-        },
-      })
-      proc.stdin?.write(payload + '\n')
-    }
+  if (!pending) return
+
+  clearTimeout(pending.timer)
+  pendingHookQuestions.delete(requestId)
+
+  // Deny the held PreToolUse hook (unblocks Claude) then deliver
+  // the user's answers via stdin as a regular user message.
+  try {
+    hookDeny(pending.res, 'User answered via custom UI. Their response follows as a user message.')
+  } catch {
+    // socket may already be gone
   }
+
+  const proc = activeProcesses.get(session.id)
+  if (!proc || proc.exitCode !== null) return
+
+  const answerEntries = Object.entries(answers)
+  const content =
+    answerEntries.length === 1
+      ? answerEntries[0][1]
+      : answerEntries.map(([q, a]) => `${q}: ${a}`).join('\n')
+
+  const payload = JSON.stringify({
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [{ type: 'text', text: content }],
+    },
+  })
+  proc.stdin?.write(payload + '\n')
 }
 
 function handleDismissHookQuestion(msg: { requestId?: string }): void {
   const { requestId } = msg
   if (!requestId) return
   const pending = pendingHookQuestions.get(requestId)
-  if (pending) {
-    clearTimeout(pending.timer)
-    pendingHookQuestions.delete(requestId)
-    try {
-      hookDeny(pending.res, 'User dismissed the question')
-    } catch {
-      // socket may already be gone
-    }
+  if (!pending) return
+
+  clearTimeout(pending.timer)
+  pendingHookQuestions.delete(requestId)
+
+  try {
+    hookDeny(pending.res, 'User dismissed the question')
+  } catch {
+    // socket may already be gone
   }
 }
 

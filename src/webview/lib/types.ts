@@ -55,29 +55,6 @@ export interface SystemMessageBlock {
   level: 'info' | 'warning'
 }
 
-export interface UserQuestionItem {
-  question: string
-  header: string
-  options: Array<{ label: string; description: string }>
-  multiSelect: boolean
-}
-
-export interface UserQuestionBlock {
-  kind: 'user_question'
-  toolCallId: string
-  questions: UserQuestionItem[]
-  status: 'pending' | 'answered'
-}
-
-// A question that arrived via the PreToolUse hook (before the tool runs).
-// The user's answer is sent back as updatedInput in the hook response.
-export interface PendingHookQuestion {
-  requestId: string
-  questions: UserQuestionItem[]
-  // Full original tool_input, used to build the updatedInput for the hook response.
-  toolInput: Record<string, unknown>
-}
-
 export type ContentBlock =
   | TextBlock
   | ThinkingBlock
@@ -85,7 +62,6 @@ export type ContentBlock =
   | SubAgentBlock
   | CompactionBlock
   | SystemMessageBlock
-  | UserQuestionBlock
 
 export interface TokenUsage {
   inputTokens: number
@@ -149,6 +125,19 @@ export interface PermissionRequest {
   requestId: string
   sessionId: string
   toolName: string
+  toolInput: Record<string, unknown>
+}
+
+export interface UserQuestionItem {
+  question: string
+  header: string
+  options: Array<{ label: string; description: string }>
+  multiSelect: boolean
+}
+
+export interface PendingHookQuestion {
+  requestId: string
+  questions: UserQuestionItem[]
   toolInput: Record<string, unknown>
 }
 

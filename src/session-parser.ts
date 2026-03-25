@@ -1,12 +1,6 @@
 import * as fs from 'fs'
 import * as readline from 'readline'
-import type {
-  ToolCall,
-  SubAgentMessage,
-  Turn,
-  ParsedSession,
-  UserQuestionBlock,
-} from './webview/lib/types'
+import type { ToolCall, SubAgentMessage, Turn, ParsedSession } from './webview/lib/types'
 import {
   extractUserText,
   extractUserAttachments,
@@ -58,7 +52,6 @@ export async function parseSessionFile(jsonlPath: string): Promise<ParsedSession
   const turns: Turn[] = []
   let currentTurn: Turn | null = null
   const pendingToolCalls = new Map<string, ToolCall>()
-  const pendingQuestions = new Map<string, UserQuestionBlock>()
 
   // Agent/Task tracking
   const taskMetaMap = new Map<string, { name: string | null; subagentType: string | null }>()
@@ -237,11 +230,6 @@ export async function parseSessionFile(jsonlPath: string): Promise<ParsedSession
             pending.isError = result.isError
             pendingToolCalls.delete(toolId)
           }
-          const pendingQ = pendingQuestions.get(toolId)
-          if (pendingQ) {
-            pendingQ.status = 'answered'
-            pendingQuestions.delete(toolId)
-          }
         }
         continue
       }
@@ -292,8 +280,6 @@ export async function parseSessionFile(jsonlPath: string): Promise<ParsedSession
               backgroundIds.add(tc.id)
             }
           }
-        } else if (block.kind === 'user_question') {
-          pendingQuestions.set(block.toolCallId, block)
         }
       }
 
@@ -328,7 +314,7 @@ export async function parseSessionFile(jsonlPath: string): Promise<ParsedSession
   }
 
   // Mark any tool calls that never received a result as 'running' — they are
-  // still awaiting output (e.g. AskUserQuestion waiting for the user to reply).
+  // still awaiting output.
   for (const tc of pendingToolCalls.values()) {
     tc.status = 'running'
   }

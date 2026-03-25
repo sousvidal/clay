@@ -11,7 +11,15 @@ function stripPlanTagsFromBlock(block: ContentBlock): ContentBlock {
   return { ...block, text: stripped }
 }
 
-export function TurnView({ turn, planMode }: { turn: Turn; planMode: boolean }): React.JSX.Element {
+export function TurnView({
+  turn,
+  planMode,
+  answeredQuestions,
+}: {
+  turn: Turn
+  planMode: boolean
+  answeredQuestions?: Map<string, Record<string, string>>
+}): React.JSX.Element {
   const renderableImages = turn.userAttachments.filter((a: UserAttachment) => a.isImage && a.data)
   const chips = turn.userAttachments.filter((a: UserAttachment) => !a.isImage || !a.data)
   const hasUserContent = turn.userMessage || turn.userAttachments.length > 0
@@ -82,7 +90,7 @@ export function TurnView({ turn, planMode }: { turn: Turn; planMode: boolean }):
 
             <div className="space-y-2">
               {displayBlocks.map((block, i) => (
-                <BlockRenderer key={i} block={block} />
+                <BlockRenderer key={i} block={block} answeredQuestions={answeredQuestions} />
               ))}
             </div>
           </div>
