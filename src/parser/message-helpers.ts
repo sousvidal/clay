@@ -26,7 +26,7 @@ export interface RawMessage {
 const METADATA_TAG_PATTERN =
   /<(?:system-reminder|task-notification|local-command-caveat|command-name|command-message|command-args|teammate-message|env|local-command-stdout|local-command-stderr|claude_background_info|fast_mode_info|gitStatus|available-deferred-tools|new-diagnostics)>[\s\S]*?<\/(?:system-reminder|task-notification|local-command-caveat|command-name|command-message|command-args|teammate-message|env|local-command-stdout|local-command-stderr|claude_background_info|fast_mode_info|gitStatus|available-deferred-tools|new-diagnostics)>/g
 
-function stripMetadataTags(text: string): string {
+export function stripMetadataTags(text: string): string {
   return text.replace(METADATA_TAG_PATTERN, '').trim()
 }
 

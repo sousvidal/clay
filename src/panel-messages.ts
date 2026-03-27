@@ -1,7 +1,6 @@
 import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
-import * as crypto from 'crypto'
 import { parseSessionFile } from './session-parser'
 import {
   activeProcesses,
@@ -11,14 +10,6 @@ import {
 } from './process-manager'
 import { pendingPermissions, pendingHookQuestions, hookAllow, hookDeny } from './permission-server'
 import { fetchSlashCommands, listWorkspaceFiles, resolveCustomCommand } from './slash-commands'
-import {
-  getPlanActivePath,
-  getPlansIndexPath,
-  readPlansIndex,
-  writePlansIndex,
-  extractPlanTitle,
-} from './plan-helpers'
-import type { SavedPlanEntry } from './plan-helpers'
 import { getJsonlPath, sendSession, setupSessionWatcher, postSystemMessage } from './panel-helpers'
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -51,7 +42,6 @@ export function wirePanelMessages(
       attachments?: AttachmentPayload[]
       model?: string
       effort?: string | null
-      planMode?: boolean
       filePath?: string
       line?: number
       requestId?: string
@@ -61,9 +51,6 @@ export function wirePanelMessages(
       toolUseId?: string
       answer?: string
       answers?: Record<string, string>
-      content?: string
-      enabled?: boolean
-      planId?: string
     }) => {
       if (msg.command === 'permissionResponse') {
         handlePermissionResponse(msg)
@@ -105,36 +92,6 @@ export function wirePanelMessages(
 
       if (msg.command === 'stopSession') {
         await handleStopSession(panel, session, workspacePath)
-        return
-      }
-
-      if (msg.command === 'togglePlanMode') {
-        handleTogglePlanMode(session)
-        return
-      }
-
-      if (msg.command === 'persistPlan') {
-        handlePersistPlan(workspacePath, session, msg.content)
-        return
-      }
-
-      if (msg.command === 'commitPlan') {
-        handleCommitPlan(panel, workspacePath, session, msg.content)
-        return
-      }
-
-      if (msg.command === 'buildPlan') {
-        handleBuildPlan(panel, workspacePath, session, msg.content)
-        return
-      }
-
-      if (msg.command === 'discardPlan') {
-        handleDiscardPlan(workspacePath, session)
-        return
-      }
-
-      if (msg.command === 'loadSavedPlan') {
-        handleLoadSavedPlan(panel, workspacePath, session, msg.planId)
         return
       }
 
@@ -272,26 +229,6 @@ async function handleReady(
   listWorkspaceFiles(workspacePath).then((files) => {
     panel.webview.postMessage({ command: 'workspaceFiles', files })
   })
-
-  // Restore active plan if one exists
-  const planPath = getPlanActivePath(workspacePath, session.id)
-  try {
-    if (fs.existsSync(planPath)) {
-      const content = fs.readFileSync(planPath, 'utf8')
-      if (content.trim()) {
-        panel.webview.postMessage({ command: 'loadPlan', content })
-      }
-    }
-  } catch {
-    // ignore
-  }
-
-  // Send saved plans list
-  const indexPath = getPlansIndexPath(workspacePath, session.id)
-  const plans = readPlansIndex(indexPath)
-  if (plans.length > 0) {
-    panel.webview.postMessage({ command: 'loadPlansList', plans })
-  }
 }
 
 function handleGetWorkspaceFile(panel: vscode.WebviewPanel, filePath?: string): void {
@@ -369,100 +306,6 @@ async function handleStopSession(
   }
 }
 
-function handleTogglePlanMode(session: SessionState): void {
-  const proc = activeProcesses.get(session.id)
-  if (proc && proc.exitCode === null) {
-    killProcess(session.id)
-    session.spawnMode = 'resume'
-  }
-}
-
-function handlePersistPlan(workspacePath: string, session: SessionState, content?: string): void {
-  if (!content) return
-  const planPath = getPlanActivePath(workspacePath, session.id)
-  try {
-    fs.writeFileSync(planPath, content)
-  } catch {
-    // silently ignore write errors
-  }
-}
-
-function handleCommitPlan(
-  panel: vscode.WebviewPanel,
-  workspacePath: string,
-  session: SessionState,
-  content?: string,
-): void {
-  if (!content) return
-  const indexPath = getPlansIndexPath(workspacePath, session.id)
-  const plans = readPlansIndex(indexPath)
-  const entry: SavedPlanEntry = {
-    id: crypto.randomUUID(),
-    title: extractPlanTitle(content),
-    content,
-    createdAt: new Date().toISOString(),
-  }
-  plans.push(entry)
-  writePlansIndex(indexPath, plans)
-  panel.webview.postMessage({ command: 'planCommitted', plans })
-}
-
-function handleBuildPlan(
-  panel: vscode.WebviewPanel,
-  workspacePath: string,
-  session: SessionState,
-  content?: string,
-): void {
-  if (!content) return
-  // Commit the plan first
-  const indexPath = getPlansIndexPath(workspacePath, session.id)
-  const plans = readPlansIndex(indexPath)
-  plans.push({
-    id: crypto.randomUUID(),
-    title: extractPlanTitle(content),
-    content,
-    createdAt: new Date().toISOString(),
-  })
-  writePlansIndex(indexPath, plans)
-  panel.webview.postMessage({ command: 'planCommitted', plans })
-
-  // Trigger a new session via the command (handled elsewhere in activate())
-  void vscode.commands.executeCommand('clay.newSessionWithMessage', content)
-}
-
-function handleDiscardPlan(workspacePath: string, session: SessionState): void {
-  const discardProc = activeProcesses.get(session.id)
-  if (discardProc && discardProc.exitCode === null) {
-    killProcess(session.id)
-    session.spawnMode = 'resume'
-  }
-  const planPath = getPlanActivePath(workspacePath, session.id)
-  try {
-    if (fs.existsSync(planPath)) fs.unlinkSync(planPath)
-  } catch {
-    // ignore
-  }
-}
-
-function handleLoadSavedPlan(
-  panel: vscode.WebviewPanel,
-  workspacePath: string,
-  session: SessionState,
-  planId?: string,
-): void {
-  if (!planId) return
-  const indexPath = getPlansIndexPath(workspacePath, session.id)
-  const plans = readPlansIndex(indexPath)
-  const plan = plans.find((p) => p.id === planId)
-  if (plan) {
-    panel.webview.postMessage({
-      command: 'loadPlan',
-      content: plan.content,
-      readOnly: true,
-    })
-  }
-}
-
 async function handleSendMessage(
   panel: vscode.WebviewPanel,
   session: SessionState,
@@ -472,7 +315,6 @@ async function handleSendMessage(
     attachments?: AttachmentPayload[]
     model?: string
     effort?: string | null
-    planMode?: boolean
   },
   panelCleanups: Map<string, () => void>,
 ): Promise<void> {
@@ -501,7 +343,6 @@ async function handleSendMessage(
           workspacePath,
           msg.model,
           msg.effort ?? undefined,
-          msg.planMode,
         )
         session.spawnMode = 'resume'
 
@@ -557,7 +398,6 @@ async function handleSendMessage(
       workspacePath,
       msg.model,
       msg.effort ?? undefined,
-      msg.planMode,
     )
 
     if (!panelCleanups.has(session.id)) {

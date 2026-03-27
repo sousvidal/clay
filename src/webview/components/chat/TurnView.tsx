@@ -1,32 +1,21 @@
 import { Bot, User, Image as ImageIcon, FileText } from 'lucide-react'
-import type { Turn, UserAttachment, ContentBlock } from '../../lib/types'
+import type { Turn, UserAttachment } from '../../lib/types'
 import { BlockRenderer } from './block-renderers'
 import { Markdown } from './Markdown'
-import { stripPlanTags, formatRelativeTime } from './conversation-utils'
-
-function stripPlanTagsFromBlock(block: ContentBlock): ContentBlock {
-  if (block.kind !== 'text') return block
-  const stripped = stripPlanTags(block.text)
-  if (!stripped) return { ...block, text: '' }
-  return { ...block, text: stripped }
-}
+import { formatRelativeTime } from './conversation-utils'
 
 export function TurnView({
   turn,
-  planMode,
   answeredQuestions,
 }: {
   turn: Turn
-  planMode: boolean
   answeredQuestions?: Map<string, Record<string, string>>
 }): React.JSX.Element {
   const renderableImages = turn.userAttachments.filter((a: UserAttachment) => a.isImage && a.data)
   const chips = turn.userAttachments.filter((a: UserAttachment) => !a.isImage || !a.data)
   const hasUserContent = turn.userMessage || turn.userAttachments.length > 0
 
-  const displayBlocks = planMode
-    ? turn.contentBlocks.map(stripPlanTagsFromBlock).filter((b) => b.kind !== 'text' || b.text)
-    : turn.contentBlocks
+  const displayBlocks = turn.contentBlocks
 
   return (
     <div className="space-y-6 py-4">

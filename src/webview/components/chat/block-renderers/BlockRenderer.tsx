@@ -77,6 +77,7 @@ export function BlockRenderer({
             answers={answeredQuestions?.get(block.toolCall.id)}
           />
         )
+      if (block.toolCall.name === 'ToolSearch') return null
       return <ToolCallView block={block} />
     case 'sub_agent':
       return <SubAgentView block={block} />

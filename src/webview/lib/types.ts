@@ -140,10 +140,3 @@ export interface PendingHookQuestion {
   questions: UserQuestionItem[]
   toolInput: Record<string, unknown>
 }
-
-export interface SavedPlan {
-  id: string
-  title: string
-  content: string
-  createdAt: string
-}

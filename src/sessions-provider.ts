@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import * as readline from 'readline'
+import { stripMetadataTags } from './parser/message-helpers'
 
 interface Session {
   id: string
@@ -89,17 +90,19 @@ async function extractSessionMeta(
           const message = msg.message as { content?: unknown } | undefined
           if (message?.content) {
             const content = message.content
+            let raw = ''
             if (typeof content === 'string') {
-              title = content.slice(0, 120)
-              preview = content.slice(0, 200)
+              raw = content
             } else if (Array.isArray(content)) {
               const textBlock = (content as Array<{ type: string; text?: string }>).find(
                 (b) => b.type === 'text',
               )
-              if (textBlock?.text) {
-                title = textBlock.text.slice(0, 120)
-                preview = textBlock.text.slice(0, 200)
-              }
+              if (textBlock?.text) raw = textBlock.text
+            }
+            const cleaned = stripMetadataTags(raw)
+            if (cleaned.length > 0) {
+              title = cleaned.slice(0, 120)
+              preview = cleaned.slice(0, 200)
             }
           }
         }

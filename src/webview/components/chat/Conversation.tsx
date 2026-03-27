@@ -11,12 +11,10 @@ import type {
   WorkspaceFile,
   PermissionRequest,
   PendingHookQuestion,
-  SavedPlan,
 } from '../../lib/types'
 import { UserQuestionView } from './block-renderers'
 import { Markdown } from './Markdown'
 import { PermissionRequestView } from './PermissionRequestView'
-import { PlanSheet } from './PlanSheet'
 import { SessionHeader } from './SessionHeader'
 import { TurnView } from './TurnView'
 import { ChatInput } from './ChatInput'
@@ -35,7 +33,6 @@ interface ConversationProps {
     attachments: Attachment[],
     model: string,
     effort: string | null,
-    planMode: boolean,
   ) => void
   onStopSession: () => void
   pendingPermission: PermissionRequest | null
@@ -48,18 +45,6 @@ interface ConversationProps {
   pendingHookQuestion: PendingHookQuestion | null
   onHookQuestionAnswer: (answers: Record<string, string>) => void
   onDismissHookQuestion: () => void
-  planMode: boolean
-  planContent: string | null
-  planReadOnly: boolean
-  savedPlans: SavedPlan[]
-  onTogglePlanMode: (enabled: boolean) => void
-  onBuildPlan: (content: string) => void
-  onSavePlan: (content: string) => void
-  onDiscardPlan: () => void
-  onClosePlanSheet: () => void
-  onEditSavedPlan: () => void
-  onLoadSavedPlan: (planId: string) => void
-  onNewPlan: () => void
 }
 
 export function Conversation({
@@ -76,18 +61,6 @@ export function Conversation({
   pendingHookQuestion,
   onHookQuestionAnswer,
   onDismissHookQuestion,
-  planMode,
-  planContent,
-  planReadOnly,
-  savedPlans,
-  onTogglePlanMode,
-  onBuildPlan,
-  onSavePlan,
-  onDiscardPlan,
-  onClosePlanSheet,
-  onEditSavedPlan,
-  onLoadSavedPlan,
-  onNewPlan,
 }: ConversationProps): React.JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
   const isAtBottom = useRef(true)
@@ -152,21 +125,6 @@ export function Conversation({
           isActive={isActive}
           isProcessing={isProcessing}
           totalTokens={totalTokens}
-          savedPlans={savedPlans}
-          onLoadSavedPlan={onLoadSavedPlan}
-          onNewPlan={onNewPlan}
-        />
-      )}
-
-      {planContent && (
-        <PlanSheet
-          content={planContent}
-          readOnly={planReadOnly}
-          onBuild={() => onBuildPlan(planContent)}
-          onSave={() => onSavePlan(planContent)}
-          onDiscard={onDiscardPlan}
-          onClose={onClosePlanSheet}
-          onEdit={onEditSavedPlan}
         />
       )}
 
@@ -194,7 +152,7 @@ export function Conversation({
                 className="absolute left-0 top-0 w-full"
                 style={{ transform: `translateY(${virtualItem.start}px)` }}
               >
-                <TurnView turn={merged} planMode={planMode} answeredQuestions={answeredQuestions} />
+                <TurnView turn={merged} answeredQuestions={answeredQuestions} />
               </div>
             )
           })}
@@ -272,11 +230,9 @@ export function Conversation({
         isActive={isActive}
         slashCommands={slashCommands}
         workspaceFiles={workspaceFiles}
-        planMode={planMode}
         turnsLength={turns.length}
         onSendMessage={onSendMessage}
         onStopSession={onStopSession}
-        onTogglePlanMode={onTogglePlanMode}
         pendingHookQuestion={pendingHookQuestion !== null}
         onDismissHookQuestion={onDismissHookQuestion}
         onSentAttachments={(idx, atts) =>

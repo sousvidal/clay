@@ -17,10 +17,6 @@ export const EFFORTS = [
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-export function stripPlanTags(text: string): string {
-  return text.replace(/<plan>[\s\S]*?<\/plan>/g, '').trim()
-}
-
 export function formatRelativeTime(timestamp: string): string {
   if (!timestamp) return ''
   const date = new Date(timestamp)

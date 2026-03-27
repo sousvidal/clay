@@ -6,19 +6,15 @@ import { MODELS, EFFORTS } from './conversation-utils'
 interface ModelSelectorProps {
   model: string
   effort: string | null
-  planMode: boolean
   onModelChange: (model: string) => void
   onEffortChange: (effort: string | null) => void
-  onTogglePlanMode: (enabled: boolean) => void
 }
 
 export function ModelSelector({
   model,
   effort,
-  planMode,
   onModelChange,
   onEffortChange,
-  onTogglePlanMode,
 }: ModelSelectorProps): React.JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
@@ -43,8 +39,6 @@ export function ModelSelector({
         <span>{MODELS.find((m) => m.id === model)?.label ?? model}</span>
         {effort && <span className="text-muted-foreground/25">·</span>}
         {effort && <span>{effort}</span>}
-        {planMode && <span className="text-muted-foreground/25">·</span>}
-        {planMode && <span>Plan</span>}
         <ChevronDown className="size-2.5" />
       </button>
 
@@ -101,36 +95,6 @@ export function ModelSelector({
                 <span className="size-2.5 shrink-0" />
               )}
               {e.label}
-            </button>
-          ))}
-
-          <div className="my-1 border-t border-border/30" />
-          <div className="mb-1 px-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/40">
-            Mode
-          </div>
-          {(
-            [
-              { id: false, label: 'Agent' },
-              { id: true, label: 'Plan' },
-            ] as const
-          ).map((m) => (
-            <button
-              key={String(m.id)}
-              onClick={() => {
-                onTogglePlanMode(m.id)
-                setOpen(false)
-              }}
-              className={cn(
-                'flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[11px] transition-colors hover:bg-accent',
-                planMode === m.id ? 'text-foreground' : 'text-muted-foreground',
-              )}
-            >
-              {planMode === m.id ? (
-                <Check className="size-2.5 shrink-0" />
-              ) : (
-                <span className="size-2.5 shrink-0" />
-              )}
-              {m.label}
             </button>
           ))}
         </div>

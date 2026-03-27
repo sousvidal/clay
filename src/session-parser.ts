@@ -200,11 +200,27 @@ export async function parseSessionFile(jsonlPath: string): Promise<ParsedSession
           if (subMeta.description) agentMsg.agentName = subMeta.description
           if (subMeta.agentType) agentMsg.subagentType = subMeta.agentType
 
-          currentTurn.contentBlocks.push({
-            kind: 'sub_agent',
-            messages: [agentMsg],
-            isBackground,
-          })
+          // If a sub_agent block for this agent was already flushed from progress
+          // messages, replace it instead of adding a duplicate.
+          const existingIdx = currentTurn.contentBlocks.findIndex(
+            (b) =>
+              b.kind === 'sub_agent' &&
+              b.messages.length === 1 &&
+              b.messages[0].agentId === agentMsg.agentId,
+          )
+          if (existingIdx !== -1) {
+            currentTurn.contentBlocks[existingIdx] = {
+              kind: 'sub_agent',
+              messages: [agentMsg],
+              isBackground,
+            }
+          } else {
+            currentTurn.contentBlocks.push({
+              kind: 'sub_agent',
+              messages: [agentMsg],
+              isBackground,
+            })
+          }
 
           // Attach tool result to pending tool call
           const results = extractToolResults(msg)

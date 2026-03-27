@@ -8,11 +8,6 @@ export const openPanels = new Map<string, vscode.WebviewPanel>()
 export const activeProcesses = new Map<string, ChildProcess>()
 export const processReadyPromises = new Map<string, Promise<void>>()
 
-// ── Constants ────────────────────────────────────────────────────────
-
-export const PLAN_SYSTEM_PROMPT =
-  'Always wrap your plan in <plan></plan> tags. Format the plan as clear markdown with a descriptive title, numbered steps, and file paths. When updating the plan, always output the complete updated plan in <plan> tags.'
-
 // ── Process lifecycle ────────────────────────────────────────────────
 
 export function spawnClaudeProcess(
@@ -21,14 +16,10 @@ export function spawnClaudeProcess(
   cwd: string,
   model?: string,
   effort?: string | null,
-  planMode?: boolean,
 ): ChildProcess {
   const modeArgs = mode === 'new' ? ['--session-id', sessionId] : ['--resume', sessionId]
   const modelArgs = model ? ['--model', model] : []
   const effortArgs = effort ? ['--effort', effort] : []
-  const planArgs = planMode
-    ? ['--permission-mode', 'plan', '--append-system-prompt', PLAN_SYSTEM_PROMPT]
-    : []
 
   const hookSettings = JSON.stringify({
     hooks: {
@@ -61,7 +52,6 @@ export function spawnClaudeProcess(
       ...modeArgs,
       ...modelArgs,
       ...effortArgs,
-      ...planArgs,
     ],
     { cwd, stdio: ['pipe', 'pipe', 'pipe'] },
   )

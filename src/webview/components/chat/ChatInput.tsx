@@ -11,17 +11,14 @@ interface ChatInputProps {
   isActive: boolean
   slashCommands: SlashCommand[]
   workspaceFiles: WorkspaceFile[]
-  planMode: boolean
   turnsLength: number
   onSendMessage: (
     text: string,
     attachments: Attachment[],
     model: string,
     effort: string | null,
-    planMode: boolean,
   ) => void
   onStopSession: () => void
-  onTogglePlanMode: (enabled: boolean) => void
   pendingHookQuestion: boolean
   onDismissHookQuestion: () => void
   onSentAttachments: (idx: number, attachments: UserAttachment[]) => void
@@ -32,11 +29,9 @@ export function ChatInput({
   isActive,
   slashCommands,
   workspaceFiles,
-  planMode,
   turnsLength,
   onSendMessage,
   onStopSession,
-  onTogglePlanMode,
   pendingHookQuestion,
   onDismissHookQuestion,
   onSentAttachments,
@@ -156,13 +151,6 @@ export function ChatInput({
     const text = inputValue.trim()
     if ((!text && attachments.length === 0) || sending) return
 
-    // Handle /plan as a local toggle
-    if (text.toLowerCase() === '/plan' && attachments.length === 0) {
-      setInputValue('')
-      onTogglePlanMode(!planMode)
-      return
-    }
-
     // Dismiss any pending hook question when the user sends a regular message
     if (pendingHookQuestion) {
       onDismissHookQuestion()
@@ -186,7 +174,7 @@ export function ChatInput({
     toSend.forEach((a) => {
       if (a.previewUrl) URL.revokeObjectURL(a.previewUrl)
     })
-    onSendMessage(text, toSend, model, effort, planMode)
+    onSendMessage(text, toSend, model, effort)
     setTimeout(() => setSending(false), 500)
   }
 
@@ -331,10 +319,8 @@ export function ChatInput({
             <ModelSelector
               model={model}
               effort={effort}
-              planMode={planMode}
               onModelChange={setModel}
               onEffortChange={setEffort}
-              onTogglePlanMode={onTogglePlanMode}
             />
             <input
               ref={inputRef}
